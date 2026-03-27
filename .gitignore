@@ -37,3 +37,8 @@ libs/
 # Minecraft/Loom specific
 run/
 remapped_mods/
+
+# Exlucde .py
+*.py
+*.pyc
+__pycache__/
