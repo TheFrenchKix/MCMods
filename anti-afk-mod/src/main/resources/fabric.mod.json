@@ -1,0 +1,20 @@
+{
+  "schemaVersion": 1,
+  "id": "anti-afk-mod",
+  "version": "${version}",
+  "name": "Anti-AFK Mod",
+  "description": "Intelligent client-side anti-AFK with obstacle detection and visual feedback.",
+  "authors": ["MWA"],
+  "contact": {},
+  "license": "MIT",
+  "environment": "client",
+  "entrypoints": {
+    "client": ["com.mwa.antiafk.AntiAfkMod"]
+  },
+  "depends": {
+    "fabricloader": ">=0.15.0",
+    "fabric-api": "*",
+    "minecraft": "~1.20.4",
+    "java": ">=17"
+  }
+}
