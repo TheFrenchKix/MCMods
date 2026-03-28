@@ -38,8 +38,6 @@ public class MovementController {
 
     public MovementController() {
         this.aimController = new AimController();
-        this.aimController.setSmoothingFactor(0.2f);
-        this.aimController.setMaxRotationSpeed(12.0f);
     }
 
     public AimController getAimController() { return aimController; }

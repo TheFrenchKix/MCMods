@@ -48,9 +48,19 @@ public class AStarPathfinder {
      * Returns empty list if no path found within iteration limit.
      */
     public static List<PathNode> findPath(BlockView world, BlockPos start, BlockPos goal) {
+        return findPath(world, start, goal, true);
+    }
+
+    /**
+     * Find a path from start to goal using A*.
+     * When logResult is false, this method suppresses noisy success/failure logs.
+     */
+    public static List<PathNode> findPath(BlockView world, BlockPos start, BlockPos goal, boolean logResult) {
         if (start.equals(goal)) return List.of(new PathNode(start));
         if (start.getSquaredDistance(goal) > (double)MAX_SEARCH_RADIUS * MAX_SEARCH_RADIUS) {
-            DebugLogger.log("AStar", "Goal too far from start, skipping path search");
+            if (logResult) {
+                DebugLogger.log("AStar", "Goal too far from start, skipping path search");
+            }
             return Collections.emptyList();
         }
 
@@ -82,9 +92,11 @@ public class AStarPathfinder {
                 List<PathNode> finalPath = ModConfig.getInstance().isPathSmoothingEnabled()
                     ? smoothPath(world, rawPath)
                     : rawPath;
-                DebugLogger.log("AStar", "Path found: " + rawPath.size() + " nodes"
-                    + (finalPath.size() != rawPath.size() ? " -> " + finalPath.size() : "")
-                    + " in " + iterations + " iterations");
+                if (logResult) {
+                    DebugLogger.log("AStar", "Path found: " + rawPath.size() + " nodes"
+                        + (finalPath.size() != rawPath.size() ? " -> " + finalPath.size() : "")
+                        + " in " + iterations + " iterations");
+                }
                 return finalPath;
             }
 
@@ -104,7 +116,9 @@ public class AStarPathfinder {
             }
         }
 
-        DebugLogger.log("AStar", "No path found after " + iterations + " iterations");
+        if (logResult) {
+            DebugLogger.log("AStar", "No path found after " + iterations + " iterations");
+        }
         return Collections.emptyList();
     }
 

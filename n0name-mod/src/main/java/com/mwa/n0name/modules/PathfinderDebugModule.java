@@ -344,7 +344,7 @@ public class PathfinderDebugModule {
     private List<PathNode> findPathWithFallback(MinecraftClient client, BlockPos from, BlockPos to, String label) {
         if (client.world == null) return Collections.emptyList();
 
-        List<PathNode> direct = AStarPathfinder.findPath(client.world, from, to);
+        List<PathNode> direct = AStarPathfinder.findPath(client.world, from, to, false);
         if (!direct.isEmpty()) {
             return direct;
         }
@@ -356,7 +356,7 @@ public class PathfinderDebugModule {
         DebugLogger.info("[PathfinderDebug] Direct path " + label + " failed, trying nearby walkable fallbacks");
         List<BlockPos> candidates = collectWalkableCandidates(client, to, 4);
         for (BlockPos candidate : candidates) {
-            List<PathNode> alt = AStarPathfinder.findPath(client.world, from, candidate);
+            List<PathNode> alt = AStarPathfinder.findPath(client.world, from, candidate, false);
             if (!alt.isEmpty()) {
                 DebugLogger.info("[PathfinderDebug] Fallback path " + label + " succeeded via " + candidate.toShortString());
                 return alt;

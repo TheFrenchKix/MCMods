@@ -6,12 +6,16 @@ import net.minecraft.client.network.ClientPlayerEntity;
 import net.minecraft.util.math.MathHelper;
 import net.minecraft.util.math.Vec3d;
 
+import java.util.Random;
+
 public class AimController {
 
-    private static final float FAST_SMOOTHING = 0.22f;
-    private static final float NORMAL_SMOOTHING = 0.08f;
-    private static final float FAST_ROTATION_SPEED = 10.5f;
-    private static final float NORMAL_ROTATION_SPEED = 6.5f;
+    private static final float FAST_SMOOTHING = 0.18f;
+    private static final float NORMAL_SMOOTHING = 0.06f;
+    private static final float FAST_ROTATION_SPEED = 8.5f;
+    private static final float NORMAL_ROTATION_SPEED = 4.8f;
+    private static final int FAST_UPDATE_INTERVAL = 1;
+    private static final int NORMAL_UPDATE_INTERVAL = 2;
 
     private Vec3d target = null;
     private boolean active = false;
@@ -20,6 +24,9 @@ public class AimController {
     private boolean fastTracking = false;
     private float yawVelocity = 0.0f;
     private float pitchVelocity = 0.0f;
+    private int debugLogCooldown = 0;
+    private int updateCooldown = 0;
+    private final Random noiseRandom = new Random();
 
     public void setTarget(Vec3d target) {
         this.target = target;
@@ -39,6 +46,8 @@ public class AimController {
         this.active = false;
         this.yawVelocity = 0.0f;
         this.pitchVelocity = 0.0f;
+        this.debugLogCooldown = 0;
+        this.updateCooldown = 0;
     }
 
     public boolean isActive() { return active; }
@@ -64,6 +73,11 @@ public class AimController {
         ClientPlayerEntity player = client.player;
         if (player == null) return;
 
+        if (--updateCooldown > 0) {
+            return;
+        }
+        updateCooldown = fastTracking ? FAST_UPDATE_INTERVAL : NORMAL_UPDATE_INTERVAL;
+
         double dx = target.x - player.getX();
         double dy = target.y - player.getEyeY();
         double dz = target.z - player.getZ();
@@ -83,11 +97,21 @@ public class AimController {
         float yawStep = smoothDelta(yawDelta, true);
         float pitchStep = smoothDelta(pitchDelta, false);
 
+        // Humanized occasional micro hesitation to avoid robotic perfect tracking.
+        if (!fastTracking && Math.abs(yawDelta) < 1.2f && Math.abs(pitchDelta) < 1.2f && noiseRandom.nextFloat() < 0.18f) {
+            yawStep *= 0.35f;
+            pitchStep *= 0.35f;
+        }
+
         player.setYaw(currentYaw + yawStep);
         player.setPitch(MathHelper.clamp(currentPitch + pitchStep, -90.0f, 90.0f));
 
-        DebugLogger.log("Aim", String.format("yaw=%.1f pitch=%.1f delta=%.1f",
-            player.getYaw(), player.getPitch(), Math.abs(yawDelta) + Math.abs(pitchDelta)));
+        if (--debugLogCooldown <= 0) {
+            debugLogCooldown = 10;
+            double totalDelta = Math.abs(yawDelta) + Math.abs(pitchDelta);
+            DebugLogger.log("Aim", String.format("yaw=%.1f pitch=%.1f delta=%.1f",
+                player.getYaw(), player.getPitch(), totalDelta));
+        }
     }
 
     public boolean isOnTarget(float thresholdDegrees) {
@@ -110,21 +134,35 @@ public class AimController {
         return yawDiff < thresholdDegrees && pitchDiff < thresholdDegrees;
     }
 
+    public void applyYawJitter(float yawOffset) {
+        MinecraftClient client = MinecraftClient.getInstance();
+        ClientPlayerEntity player = client.player;
+        if (player == null) return;
+
+        float constrained = MathHelper.clamp(yawOffset, -1.25f, 1.25f);
+        float humanized = constrained * (0.75f + noiseRandom.nextFloat() * 0.2f);
+        player.setYaw(player.getYaw() + humanized);
+    }
+
     private float smoothDelta(float delta, boolean yawAxis) {
         float absDelta = Math.abs(delta);
         float easing = smoothStep(0.0f, fastTracking ? 50.0f : 30.0f, absDelta);
-        float desiredStep = delta * (smoothingFactor + easing * (fastTracking ? 0.18f : 0.12f));
+        float desiredStep = delta * (smoothingFactor + easing * (fastTracking ? 0.13f : 0.08f));
+        float noiseScale = fastTracking
+            ? (0.92f + noiseRandom.nextFloat() * 0.10f)
+            : (0.82f + noiseRandom.nextFloat() * 0.14f);
+        desiredStep *= noiseScale;
         float maxStep = Math.min(maxRotationSpeed,
-            (fastTracking ? 2.2f : 1.3f) + (float) Math.sqrt(absDelta) * (fastTracking ? 2.4f : 1.7f));
+            (fastTracking ? 1.8f : 0.95f) + (float) Math.sqrt(absDelta) * (fastTracking ? 2.0f : 1.35f));
 
         if (yawAxis) {
-            yawVelocity += (desiredStep - yawVelocity) * 0.34f;
+            yawVelocity += (desiredStep - yawVelocity) * (fastTracking ? 0.27f : 0.20f);
             yawVelocity = MathHelper.clamp(yawVelocity, -maxStep, maxStep);
             if (absDelta < 0.35f) yawVelocity = delta;
             return yawVelocity;
         }
 
-        pitchVelocity += (desiredStep - pitchVelocity) * 0.30f;
+        pitchVelocity += (desiredStep - pitchVelocity) * (fastTracking ? 0.24f : 0.18f);
         pitchVelocity = MathHelper.clamp(pitchVelocity, -maxStep, maxStep);
         if (absDelta < 0.35f) pitchVelocity = delta;
         return pitchVelocity;

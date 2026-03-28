@@ -25,9 +25,12 @@ import net.minecraft.util.math.Box;
 import net.minecraft.util.math.MathHelper;
 import net.minecraft.util.math.Vec3d;
 
+import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 
 /**
@@ -52,6 +55,9 @@ public class AutoSlayModule {
     private int repathCooldown = 0;
     private static final int SCAN_INTERVAL = 5;
     private static final int REPATH_INTERVAL = 40;
+    private static final int MAX_PATH_FAILURES_BEFORE_SWITCH = 4;
+    private static final int MAX_STEP_SUBGOAL_DISTANCE = 12;
+    private static final int MIN_STEP_SUBGOAL_DISTANCE = 4;
 
     // RED target box and path colors
     private static final int TARGET_BOX_COLOR = 0xFFFF4444;
@@ -59,6 +65,8 @@ public class AutoSlayModule {
     private static final int PATH_NODE_COLOR = 0xFF8833;
     private static final int PATH_CURRENT_COLOR = 0xFFFF44;
     private static final int PATH_TARGET_COLOR = 0xFF3333;
+
+    private int consecutivePathFailures = 0;
 
     public AimController getAimController() { return aimController; }
 
@@ -178,6 +186,7 @@ public class AutoSlayModule {
                 state = State.IDLE;
                 currentPath = Collections.emptyList();
                 repathCooldown = 0;
+                consecutivePathFailures = 0;
             }
         }
     }
@@ -210,38 +219,50 @@ public class AutoSlayModule {
     }
 
     private void computePathToTarget(MinecraftClient client, ClientPlayerEntity player) {
+        if (currentTarget == null || client.world == null) return;
+
         BlockPos playerPos = player.getBlockPos();
-        BlockPos targetPos = new BlockPos(
+        BlockPos targetPosRaw = new BlockPos(
             (int) Math.floor(currentTarget.getX()),
             (int) Math.floor(currentTarget.getY()),
             (int) Math.floor(currentTarget.getZ())
         );
 
-        if (!WalkabilityChecker.hasGroundBelow(client.world, targetPos, 4)) {
-            DebugLogger.log("AutoSlay", "Target position unreachable (no ground)");
+        BlockPos targetPos = sanitizeWalkableAnchor(client, targetPosRaw, "target");
+        if (targetPos == null) {
+            onPathFailed(player, "Target anchor is not walkable");
             return;
         }
 
         state = State.PATHFINDING;
-        List<PathNode> path = AStarPathfinder.findPath(client.world, playerPos, targetPos);
+        List<PathNode> path = findPathWithFallback(client, playerPos, targetPos, "target");
+        String pathKind = "direct";
 
         if (path.isEmpty() || path.size() < 2) {
-            state = State.IDLE;
-            currentPath = Collections.emptyList();
+            path = findStepByStepPath(client, playerPos, targetPos);
+            pathKind = "step";
+        }
+
+        if (path.isEmpty() || path.size() < 2) {
+            onPathFailed(player, "No path found to target");
             return;
         }
 
+        consecutivePathFailures = 0;
         currentPath = path;
         movementController.startPath(path);
         state = State.WALKING;
         repathCooldown = REPATH_INTERVAL;
+        DebugLogger.log("AutoSlay", "Path to " + currentTarget.getDisplayName().getString()
+            + " (" + path.size() + " nodes, mode=" + pathKind + ")");
     }
 
     private void handleWalking(MinecraftClient client, ClientPlayerEntity player, double dist, double attackRange) {
-        if (dist <= attackRange) {
+        if (isTargetReachableNow(player, attackRange)) {
             movementController.stop();
             currentPath = Collections.emptyList();
             state = State.ATTACKING;
+            DebugLogger.log("AutoSlay", "Target reachable, switching to attack");
             return;
         }
 
@@ -268,6 +289,7 @@ public class AutoSlayModule {
                 currentPath = Collections.emptyList();
                 state = State.IDLE;
                 repathCooldown = 0;
+                onPathFailed(player, "Movement stuck, retrying");
             }
             case IDLE -> {
                 state = State.IDLE;
@@ -279,6 +301,7 @@ public class AutoSlayModule {
                     double targetMoveDist = currentTarget.getBlockPos()
                         .getSquaredDistance(currentPath.get(currentPath.size() - 1).toBlockPos());
                     if (targetMoveDist > 9) {
+                        DebugLogger.log("AutoSlay", "Target moved, refreshing path");
                         movementController.stop();
                         currentPath = Collections.emptyList();
                         state = State.IDLE;
@@ -356,12 +379,153 @@ public class AutoSlayModule {
         aimController.clearTarget();
         releaseKeys();
         scanCooldown = 0;
+        consecutivePathFailures = 0;
     }
 
     private void releaseKeys() {
         MinecraftClient c = MinecraftClient.getInstance();
         if (c.options == null) return;
         c.options.forwardKey.setPressed(false);
+    }
+
+    private boolean isTargetReachableNow(ClientPlayerEntity player, double attackRange) {
+        if (currentTarget == null) return false;
+        double dist = Math.sqrt(player.squaredDistanceTo(currentTarget));
+        if (dist <= attackRange) {
+            return true;
+        }
+        return dist <= attackRange + 0.8 && player.canSee(currentTarget);
+    }
+
+    private void onPathFailed(ClientPlayerEntity player, String reason) {
+        consecutivePathFailures++;
+        state = State.IDLE;
+        currentPath = Collections.emptyList();
+        movementController.stop();
+
+        String targetName = currentTarget == null ? "-" : currentTarget.getDisplayName().getString();
+        DebugLogger.log("AutoSlay", reason + " (target=" + targetName + ", fail=" + consecutivePathFailures + ")");
+
+        if (consecutivePathFailures >= MAX_PATH_FAILURES_BEFORE_SWITCH) {
+            DebugLogger.log("AutoSlay", "Switching target after repeated path failures");
+            currentTarget = null;
+            consecutivePathFailures = 0;
+            scanCooldown = 0;
+            releaseKeys();
+            return;
+        }
+
+        // Try scanning sooner after a failed attempt.
+        scanCooldown = Math.min(scanCooldown, 2);
+        if (player != null) {
+            repathCooldown = 0;
+        }
+    }
+
+    private BlockPos sanitizeWalkableAnchor(MinecraftClient client, BlockPos anchor, String label) {
+        if (client.world == null) return null;
+        if (WalkabilityChecker.isWalkable(client.world, anchor)) {
+            return anchor;
+        }
+
+        BlockPos nearest = findNearestWalkable(client, anchor, 6);
+        if (nearest != null) {
+            DebugLogger.log("AutoSlay", label + " snapped to walkable " + nearest.toShortString());
+            return nearest;
+        }
+
+        return null;
+    }
+
+    private List<PathNode> findPathWithFallback(MinecraftClient client, BlockPos from, BlockPos to, String label) {
+        if (client.world == null) return Collections.emptyList();
+
+        List<PathNode> direct = AStarPathfinder.findPath(client.world, from, to, false);
+        if (!direct.isEmpty()) {
+            return direct;
+        }
+
+        List<BlockPos> candidates = collectWalkableCandidates(client, to, 4);
+        for (BlockPos candidate : candidates) {
+            List<PathNode> alt = AStarPathfinder.findPath(client.world, from, candidate, false);
+            if (!alt.isEmpty()) {
+                DebugLogger.log("AutoSlay", "Fallback " + label + " path via " + candidate.toShortString());
+                return alt;
+            }
+        }
+
+        return Collections.emptyList();
+    }
+
+    private List<PathNode> findStepByStepPath(MinecraftClient client, BlockPos from, BlockPos target) {
+        if (client.world == null) return Collections.emptyList();
+
+        Vec3d delta = new Vec3d(target.getX() - from.getX(), target.getY() - from.getY(), target.getZ() - from.getZ());
+        double dist = delta.length();
+        if (dist < 1.0e-4) {
+            return Collections.emptyList();
+        }
+
+        Vec3d dir = delta.normalize();
+        int maxStep = Math.min(MAX_STEP_SUBGOAL_DISTANCE, (int) Math.floor(dist));
+
+        for (int step = maxStep; step >= MIN_STEP_SUBGOAL_DISTANCE; step -= 2) {
+            BlockPos projected = BlockPos.ofFloored(
+                from.getX() + dir.x * step,
+                from.getY() + dir.y * step,
+                from.getZ() + dir.z * step
+            );
+
+            BlockPos stepTarget = sanitizeWalkableAnchor(client, projected, "step");
+            if (stepTarget == null) {
+                continue;
+            }
+
+            List<PathNode> stepPath = findPathWithFallback(client, from, stepTarget, "step");
+            if (!stepPath.isEmpty() && stepPath.size() >= 2) {
+                DebugLogger.log("AutoSlay", "Step-by-step recovery using subgoal " + stepTarget.toShortString()
+                    + " dist=" + String.format(Locale.ROOT, "%.1f", Math.sqrt(stepTarget.getSquaredDistance(target))));
+                return stepPath;
+            }
+        }
+
+        // Last attempt: try nearby walkable candidates around the target sorted by distance to target.
+        List<BlockPos> candidates = collectWalkableCandidates(client, target, 8);
+        for (BlockPos candidate : candidates) {
+            List<PathNode> alt = AStarPathfinder.findPath(client.world, from, candidate, false);
+            if (!alt.isEmpty() && alt.size() >= 2) {
+                DebugLogger.log("AutoSlay", "Step-by-step fallback via nearby " + candidate.toShortString());
+                return alt;
+            }
+        }
+
+        return Collections.emptyList();
+    }
+
+    private BlockPos findNearestWalkable(MinecraftClient client, BlockPos around, int radius) {
+        List<BlockPos> candidates = collectWalkableCandidates(client, around, radius);
+        return candidates.isEmpty() ? null : candidates.get(0);
+    }
+
+    private List<BlockPos> collectWalkableCandidates(MinecraftClient client, BlockPos around, int radius) {
+        if (client.world == null) return Collections.emptyList();
+
+        List<BlockPos> out = new ArrayList<>();
+        for (int r = 1; r <= radius; r++) {
+            for (int dx = -r; dx <= r; dx++) {
+                for (int dz = -r; dz <= r; dz++) {
+                    for (int dy = -3; dy <= 3; dy++) {
+                        BlockPos candidate = around.add(dx, dy, dz);
+                        if (!WalkabilityChecker.isWalkable(client.world, candidate)) continue;
+                        out.add(candidate.toImmutable());
+                    }
+                }
+            }
+            if (!out.isEmpty()) break;
+        }
+
+        out.sort(Comparator.comparingDouble(pos -> pos.getSquaredDistance(around)));
+        return out;
     }
 
     public void render(WorldRenderContext context) {

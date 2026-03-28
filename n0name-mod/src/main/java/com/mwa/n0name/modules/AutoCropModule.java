@@ -64,7 +64,7 @@ public class AutoCropModule {
 
         if (config.isFailsafeYawJitterEnabled() && --jitterCooldown <= 0) {
             float jitter = (random.nextFloat() - 0.5f) * 1.2f;
-            player.setYaw(player.getYaw() + jitter);
+            aimController.applyYawJitter(jitter);
             jitterCooldown = 8 + random.nextInt(8);
         }
 

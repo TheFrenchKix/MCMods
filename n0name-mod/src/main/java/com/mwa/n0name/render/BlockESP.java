@@ -20,6 +20,7 @@ public class BlockESP {
 
     private int scanCooldown = 0;
     private final Map<String, List<BlockPos>> scannedBlocks = new ConcurrentHashMap<>();
+    private int lastSnapshotHash = 0;
 
     public void tick() {
         if (--scanCooldown > 0) return;
@@ -57,7 +58,15 @@ public class BlockESP {
 
         scannedBlocks.clear();
         scannedBlocks.putAll(fresh);
-        DebugLogger.log("BlockESP", "Scanned " + fresh.size() + " block types");
+        int snapshotHash = 17;
+        for (Map.Entry<String, List<BlockPos>> entry : fresh.entrySet()) {
+            snapshotHash = 31 * snapshotHash + entry.getKey().hashCode();
+            snapshotHash = 31 * snapshotHash + entry.getValue().size();
+        }
+        if (snapshotHash != lastSnapshotHash) {
+            lastSnapshotHash = snapshotHash;
+            DebugLogger.log("BlockESP", "Scanned " + fresh.size() + " block types");
+        }
     }
 
     public void render(WorldRenderContext context) {

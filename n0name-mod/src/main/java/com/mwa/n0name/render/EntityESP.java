@@ -21,6 +21,7 @@ public class EntityESP {
 
     private int refreshCooldown = 0;
     private final Set<String> visibleEntityTypes = Collections.newSetFromMap(new ConcurrentHashMap<>());
+    private int lastSnapshotHash = 0;
 
     public void tick() {
         if (--refreshCooldown > 0) return;
@@ -43,7 +44,14 @@ public class EntityESP {
         }
         visibleEntityTypes.clear();
         visibleEntityTypes.addAll(fresh);
-        DebugLogger.log("EntityESP", "Refreshed entity types");
+        int snapshotHash = 17;
+        for (String id : fresh) {
+            snapshotHash = 31 * snapshotHash + id.hashCode();
+        }
+        if (snapshotHash != lastSnapshotHash) {
+            lastSnapshotHash = snapshotHash;
+            DebugLogger.log("EntityESP", "Refreshed entity types (" + fresh.size() + ")");
+        }
     }
 
     public void render(WorldRenderContext context) {
