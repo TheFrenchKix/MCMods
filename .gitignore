@@ -38,7 +38,15 @@ libs/
 run/
 remapped_mods/
 
-# Exlucde .py
+# Python files
 *.py
 *.pyc
 __pycache__/
+
+# Logs
+logs/
+
+# Misc
+*.log
+*.tmp
+*.txt
