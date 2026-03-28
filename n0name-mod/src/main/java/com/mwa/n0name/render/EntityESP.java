@@ -19,13 +19,15 @@ import java.util.concurrent.ConcurrentHashMap;
 
 public class EntityESP {
 
+    private static final int REFRESH_INTERVAL = 4;
+
     private int refreshCooldown = 0;
     private final Set<String> visibleEntityTypes = Collections.newSetFromMap(new ConcurrentHashMap<>());
     private int lastSnapshotHash = 0;
 
     public void tick() {
         if (--refreshCooldown > 0) return;
-        refreshCooldown = 60;
+        refreshCooldown = REFRESH_INTERVAL;
 
         MinecraftClient client = MinecraftClient.getInstance();
         if (client.player == null || client.world == null) return;

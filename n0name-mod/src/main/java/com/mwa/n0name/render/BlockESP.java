@@ -15,49 +15,44 @@ import java.util.concurrent.ConcurrentHashMap;
 
 public class BlockESP {
 
-    private static final int SCAN_INTERVAL = 40;
+    private static final int COLUMNS_PER_TICK = 72;
     private static final int MAX_TYPES   = 40;
 
-    private int scanCooldown = 0;
     private final Map<String, List<BlockPos>> scannedBlocks = new ConcurrentHashMap<>();
     private int lastSnapshotHash = 0;
+    private ScanState scanState;
 
     public void tick() {
-        if (--scanCooldown > 0) return;
-        scanCooldown = SCAN_INTERVAL;
-
         MinecraftClient client = MinecraftClient.getInstance();
         if (client.player == null || client.world == null) return;
 
-        int px = (int)client.player.getX();
-        int py = (int)client.player.getY();
-        int pz = (int)client.player.getZ();
+        int px = (int) client.player.getX();
+        int py = (int) client.player.getY();
+        int pz = (int) client.player.getZ();
 
         ModConfig config = ModConfig.getInstance();
         double blockRange = config.getBlockEspRange();
         int radiusXZ = Math.max(5, (int)(blockRange / 2.0));
         int radiusY = Math.max(2, (int)(blockRange / 5.0));
-        
-        Map<String, List<BlockPos>> fresh = new LinkedHashMap<>();
 
-        for (int x = px - radiusXZ; x <= px + radiusXZ; x++) {
-            for (int z = pz - radiusXZ; z <= pz + radiusXZ; z++) {
-                for (int y = py - radiusY; y <= py + radiusY; y++) {
-                    BlockPos pos = new BlockPos(x, y, z);
-                    var state = client.world.getBlockState(pos);
-                    if (state.isAir()) continue;
-
-                    String id = Registries.BLOCK.getId(state.getBlock()).toString();
-                    if (!fresh.containsKey(id) && fresh.size() >= MAX_TYPES) continue;
-
-                    config.getOrCreateBlockEntry(id);
-                    fresh.computeIfAbsent(id, k -> new ArrayList<>()).add(pos.toImmutable());
-                }
-            }
+        if (scanState == null || !scanState.matches(px, py, pz, radiusXZ, radiusY)) {
+            scanState = new ScanState(px, py, pz, radiusXZ, radiusY);
         }
 
+        int processed = 0;
+        while (processed < COLUMNS_PER_TICK && !scanState.isComplete()) {
+            scanState.scanNextColumn(client, config);
+            processed++;
+        }
+
+        if (!scanState.isComplete()) {
+            return;
+        }
+
+        Map<String, List<BlockPos>> fresh = scanState.snapshot();
         scannedBlocks.clear();
         scannedBlocks.putAll(fresh);
+
         int snapshotHash = 17;
         for (Map.Entry<String, List<BlockPos>> entry : fresh.entrySet()) {
             snapshotHash = 31 * snapshotHash + entry.getKey().hashCode();
@@ -67,6 +62,9 @@ public class BlockESP {
             lastSnapshotHash = snapshotHash;
             DebugLogger.log("BlockESP", "Scanned " + fresh.size() + " block types");
         }
+
+        // Start a fresh sweep centered on the most recent player position.
+        scanState = new ScanState(px, py, pz, radiusXZ, radiusY);
     }
 
     public void render(WorldRenderContext context) {
@@ -129,5 +127,66 @@ public class BlockESP {
         List<String> ids = new ArrayList<>(scannedBlocks.keySet());
         ids.sort(String::compareTo);
         return ids;
+    }
+
+    private static final class ScanState {
+        private final int cx;
+        private final int cy;
+        private final int cz;
+        private final int radiusXZ;
+        private final int radiusY;
+        private final int side;
+        private final int totalColumns;
+        private final Map<String, List<BlockPos>> blocks = new LinkedHashMap<>();
+        private int columnIndex = 0;
+
+        private ScanState(int cx, int cy, int cz, int radiusXZ, int radiusY) {
+            this.cx = cx;
+            this.cy = cy;
+            this.cz = cz;
+            this.radiusXZ = radiusXZ;
+            this.radiusY = radiusY;
+            this.side = radiusXZ * 2 + 1;
+            this.totalColumns = side * side;
+        }
+
+        private boolean matches(int px, int py, int pz, int rxz, int ry) {
+            if (rxz != radiusXZ || ry != radiusY) {
+                return false;
+            }
+            // Keep scanning if the player is still close to sweep center.
+            return Math.abs(px - cx) <= 2 && Math.abs(py - cy) <= 2 && Math.abs(pz - cz) <= 2;
+        }
+
+        private boolean isComplete() {
+            return columnIndex >= totalColumns;
+        }
+
+        private void scanNextColumn(MinecraftClient client, ModConfig config) {
+            if (client.player == null || client.world == null || isComplete()) return;
+
+            int ix = columnIndex % side;
+            int iz = columnIndex / side;
+            columnIndex++;
+
+            int x = cx - radiusXZ + ix;
+            int z = cz - radiusXZ + iz;
+
+            for (int y = cy - radiusY; y <= cy + radiusY; y++) {
+                BlockPos pos = new BlockPos(x, y, z);
+                var state = client.world.getBlockState(pos);
+                if (state.isAir()) continue;
+
+                String id = Registries.BLOCK.getId(state.getBlock()).toString();
+                if (!blocks.containsKey(id) && blocks.size() >= MAX_TYPES) continue;
+
+                config.getOrCreateBlockEntry(id);
+                blocks.computeIfAbsent(id, k -> new ArrayList<>()).add(pos.toImmutable());
+            }
+        }
+
+        private Map<String, List<BlockPos>> snapshot() {
+            return new LinkedHashMap<>(blocks);
+        }
     }
 }

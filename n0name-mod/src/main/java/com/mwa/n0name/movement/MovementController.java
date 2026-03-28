@@ -32,6 +32,7 @@ public class MovementController {
     private static final double NODE_REACH_Y = 1.25;
     private static final double MIN_PROGRESS_SQ = 0.0004;
     private static final float STRAFE_ANGLE_THRESHOLD = 8.0f;
+    private static final float STRAFE_MAX_CORRECTION_ANGLE = 70.0f;
     private static final double SPRINT_DIST = 1.6;
 
     private final AimController aimController;
@@ -46,6 +47,12 @@ public class MovementController {
     public int getCurrentNodeIndex() { return currentNodeIndex; }
     public void setPreventLedgeFall(boolean v) { preventLedgeFall = v; }
     public void setLedgeMaxDrop(int v) { ledgeMaxDrop = Math.max(0, Math.min(3, v)); }
+
+    public void frameUpdate() {
+        if (state == WalkState.WALKING && aimController.isActive()) {
+            aimController.tick();
+        }
+    }
 
     /**
      * Start walking a given path.
@@ -137,7 +144,6 @@ public class MovementController {
         // Aim at target node at eye height for natural-looking movement
         float eyeH = player.getEyeHeight(player.getPose());
         aimController.setTarget(new Vec3d(targetPos.x, targetNode.y() + eyeH, targetPos.z));
-        aimController.tick();
 
         client.options.backKey.setPressed(false);
         client.options.leftKey.setPressed(false);
@@ -212,6 +218,10 @@ public class MovementController {
         double dz = targetPos.z - player.getZ();
         float desiredYaw = (float)(Math.toDegrees(Math.atan2(dz, dx)) - 90.0);
         float yawDelta = MathHelper.wrapDegrees(desiredYaw - player.getYaw());
+
+        if (Math.abs(yawDelta) > STRAFE_MAX_CORRECTION_ANGLE) {
+            return;
+        }
 
         if (yawDelta > STRAFE_ANGLE_THRESHOLD) {
             client.options.rightKey.setPressed(true);

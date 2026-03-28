@@ -34,7 +34,7 @@ import java.util.Map;
 public class AutoMineModule {
 
     private static final double BREAK_RANGE = 4.5;
-    private static final int SCAN_INTERVAL = 8;
+    private static final int SCAN_INTERVAL = 3;
     private static final int REPATH_INTERVAL = 30;
     private static final int TARGET_BOX_COLOR = 0xFF44DD88;
     private static final int PATH_LINE_COLOR = 0xFF55AA88;
@@ -53,6 +53,13 @@ public class AutoMineModule {
     private boolean wasActive = false;
     private int scanCooldown = 0;
     private int repathCooldown = 0;
+
+    public void frameUpdate() {
+        if (aimController.isActive()) {
+            aimController.tick();
+        }
+        movementController.frameUpdate();
+    }
 
     public void tick() {
         ModConfig cfg = ModConfig.getInstance();

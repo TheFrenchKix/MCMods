@@ -44,6 +44,7 @@ public class PathfinderDebugModule {
 
     private BlockPos startPos;
     private BlockPos stopPos;
+        private BlockPos coordsGoal;
     private List<PathNode> currentPath = Collections.emptyList();
     private List<PathNode> lastPathToStart = Collections.emptyList();
     private List<PathNode> lastPathToStop = Collections.emptyList();
@@ -77,6 +78,42 @@ public class PathfinderDebugModule {
 
         stopPos = player.getBlockPos().toImmutable();
         DebugLogger.info("[PathfinderDebug] Stop set to " + stopPos.toShortString());
+    }
+
+    public void goToCoords(int x, int y, int z) {
+        MinecraftClient client = MinecraftClient.getInstance();
+        ClientPlayerEntity player = client.player;
+        if (player == null || client.world == null) return;
+
+        coordsGoal = new BlockPos(x, y, z);
+        BlockPos from = sanitizeAnchor(client, player.getBlockPos(), "player");
+        if (from == null) {
+            DebugLogger.info("PathfinderDebug: Player position is not walkable");
+            return;
+        }
+        BlockPos saneGoal = sanitizeAnchor(client, coordsGoal, "coords-goal");
+        if (saneGoal == null) {
+            DebugLogger.info("PathfinderDebug: Coords goal is not walkable, no fallback found");
+            return;
+        }
+        coordsGoal = saneGoal;
+        List<PathNode> path = findPathWithFallback(client, from, coordsGoal, "coords");
+        logPath("coords", path, from, coordsGoal);
+        if (path.isEmpty() || path.size() < 2) {
+            DebugLogger.info("PathfinderDebug: No path found to coords " + coordsGoal.toShortString());
+            stop();
+            return;
+        }
+        lastPathToStop = path;
+        lastPathToStart = Collections.emptyList();
+        currentPath = path;
+        movementController.startPath(path);
+        state = State.GOING_TO_STOP;
+        logTickCooldown = 0;
+    }
+
+    public String getCoordsGoalText() {
+        return coordsGoal == null ? "Coords: not set" : "Coords: " + coordsGoal.toShortString();
     }
 
     public void go() {
@@ -189,6 +226,10 @@ public class PathfinderDebugModule {
         }
     }
 
+    public void frameUpdate() {
+        movementController.frameUpdate();
+    }
+
     public void render(WorldRenderContext context) {
         renderMarkers(context);
 
@@ -239,7 +280,8 @@ public class PathfinderDebugModule {
         int dir = direction == 0 ? 1 : direction;
         int next = (verbosity.ordinal() + dir + values.length) % values.length;
         verbosity = values[next];
-        DebugLogger.info("[PathfinderDebug] Verbosity set to " + verbosity.name());
+        DebugLogger.info("[PathfinderDebug] Verbosity set to " + verbosity.name()
+            + (verbosity == Verbosity.FULL ? " (deep trace ON)" : " (deep trace OFF)"));
     }
 
     public boolean isSnapToNearestWalkable() {
@@ -284,9 +326,16 @@ public class PathfinderDebugModule {
             return;
         }
 
-        List<PathNode> toStop = findPathWithFallback(client, player.getBlockPos(), stopPos, "to stop");
+        BlockPos saneFrom = sanitizeAnchor(client, player.getBlockPos(), "player");
+        if (saneFrom == null) {
+            DebugLogger.info("[PathfinderDebug] Player anchor is not walkable and no fallback was found");
+            stop();
+            return;
+        }
+
+        List<PathNode> toStop = findPathWithFallback(client, saneFrom, stopPos, "to stop");
         lastPathToStop = toStop;
-        logPath("to stop", toStop, player.getBlockPos(), stopPos);
+        logPath("to stop", toStop, saneFrom, stopPos);
         if (toStop.isEmpty() || toStop.size() < 2) {
             DebugLogger.info("[PathfinderDebug] Failed to find path to stop position");
             stop();
@@ -343,8 +392,9 @@ public class PathfinderDebugModule {
 
     private List<PathNode> findPathWithFallback(MinecraftClient client, BlockPos from, BlockPos to, String label) {
         if (client.world == null) return Collections.emptyList();
+        boolean verboseTrace = verbosity == Verbosity.FULL;
 
-        List<PathNode> direct = AStarPathfinder.findPath(client.world, from, to, false);
+        List<PathNode> direct = AStarPathfinder.findPath(client.world, from, to, false, verboseTrace);
         if (!direct.isEmpty()) {
             return direct;
         }
@@ -356,7 +406,7 @@ public class PathfinderDebugModule {
         DebugLogger.info("[PathfinderDebug] Direct path " + label + " failed, trying nearby walkable fallbacks");
         List<BlockPos> candidates = collectWalkableCandidates(client, to, 4);
         for (BlockPos candidate : candidates) {
-            List<PathNode> alt = AStarPathfinder.findPath(client.world, from, candidate, false);
+            List<PathNode> alt = AStarPathfinder.findPath(client.world, from, candidate, false, verboseTrace);
             if (!alt.isEmpty()) {
                 DebugLogger.info("[PathfinderDebug] Fallback path " + label + " succeeded via " + candidate.toShortString());
                 return alt;

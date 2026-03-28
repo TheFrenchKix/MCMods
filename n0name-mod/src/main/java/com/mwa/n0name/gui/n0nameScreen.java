@@ -83,6 +83,8 @@ public class n0nameScreen extends Screen {
     private int blockEspScroll = 0, entityEspScroll = 0, routeScroll = 0;
     private String routeNameInput = "route1";
     private String activeSlider = null;
+    private String pathfinderCoordsInput = "";
+    private boolean pathfinderCoordsFocused = false;
     private int lastContentHeight = 0;
 
     // --- Dimensions ---
@@ -429,6 +431,7 @@ public class n0nameScreen extends Screen {
 
         y = sectionTitle(ctx, cx, y, cw, "Movement");
         y = modRow(ctx, cx, y, cw, mx, my, "Anti-AFK", anim("afk"), Cat.MISC.color);
+        y = cycleRow(ctx, cx, y, cw, mx, my, "Aim Profile", cfg.getAimProfile().name());
 
         y += 4;
         y = sectionTitle(ctx, cx, y, cw, "Debug & System");
@@ -446,6 +449,14 @@ public class n0nameScreen extends Screen {
         y = btnRow(ctx, cx, y, cw, mx, my, "Set Start Position");
         y = btnRow(ctx, cx, y, cw, mx, my, "Set Stop Position");
         y = btnRow(ctx, cx, y, cw, mx, my, "Go");
+        y = btnRow(ctx, cx, y, cw, mx, my, "Go To Coords");
+        int coordsLeft = cx + PAD + 12, coordsRight = cx + cw - PAD;
+        ctx.fill(coordsLeft, y, coordsRight, y + SUB_H, 0xFF1A1A2E);
+        ctx.fill(coordsLeft, y, coordsLeft + 2, y + SUB_H, pathfinderCoordsFocused ? C_ACCENT : 0xFF44506A);
+        String coordsText = pathfinderCoordsInput.isEmpty() ? "x y z" : pathfinderCoordsInput;
+        ctx.drawTextWithShadow(textRenderer, coordsText + (pathfinderCoordsFocused ? "_" : ""), coordsLeft + 8, y + 4,
+            pathfinderCoordsInput.isEmpty() ? C_MUTED : C_TEXT);
+        y += SUB_H + 2;
         y = btnRow(ctx, cx, y, cw, mx, my, "Stop");
         y = btnRow(ctx, cx, y, cw, mx, my, "Clear Start/Stop");
         if (pathfinderDebugModule != null) {
@@ -453,20 +464,19 @@ public class n0nameScreen extends Screen {
             y = checkRow(ctx, cx, y, cw, mx, my, "Snap To Walkable", pathfinderDebugModule.isSnapToNearestWalkable());
             y = infoRow(ctx, cx, y, cw, pathfinderDebugModule.getStartText());
             y = infoRow(ctx, cx, y, cw, pathfinderDebugModule.getStopText());
+            y = infoRow(ctx, cx, y, cw, pathfinderDebugModule.getCoordsGoalText());
             y = infoRow(ctx, cx, y, cw, pathfinderDebugModule.getStatusText());
         }
 
         y += 4;
-        y = sectionTitle(ctx, cx, y, cw, "Info & Hotkeys");
+        y = sectionTitle(ctx, cx, y, cw, "Info");
         if (waypointManagerModule != null) {
-            y = infoRow(ctx, cx, y, cw, waypointManagerModule.getSlotText(1) + " | Shift=WP2 Alt=WP3");
+            y = infoRow(ctx, cx, y, cw, waypointManagerModule.getSlotText(1));
         }
         if (timeLoggerModule != null) {
             y = infoRow(ctx, cx, y, cw, timeLoggerModule.getSummaryText());
         }
-        y = infoRow(ctx, cx, y, cw, "Macros: F6/F7/F8 | WP: F9/F10");
-        y = infoRow(ctx, cx, y, cw, "Crop: F1 Silent | F2 Tool | F3 Mode | F4 Type");
-        y = infoRow(ctx, cx, y, cw, "F5 Jacob | F11 Lane | F12 WP Chain");
+        y = infoRow(ctx, cx, y, cw, "Controls moved to ClickGUI (keybinds removed)");
         return y + PAD - cy;
     }
 
@@ -943,7 +953,9 @@ public class n0nameScreen extends Screen {
         int ry = cy + PAD + 18;
 
         if (hitModRow(x, y, cx, ry, cw)) { cfg.setAntiAfkEnabled(!cfg.isAntiAfkEnabled()); return true; }
-        ry += ROW_H + 4 + 18;
+        ry += ROW_H;
+        if (hitSub(x, y, cx, ry, cw)) { cycleAimProfile(cfg, dir(x, cx, cw)); return true; }
+        ry += SUB_H + 4 + 18;
 
         if (hitModRow(x, y, cx, ry, cw)) { toggleOrExpand(x, cx, cw, "dbgtools", () -> cfg.setDebugToolsEnabled(!cfg.isDebugToolsEnabled())); return true; }
         ry += ROW_H;
@@ -960,6 +972,29 @@ public class n0nameScreen extends Screen {
         if (hitSub(x, y, cx, ry, cw)) { if (pathfinderDebugModule != null) pathfinderDebugModule.setStartFromPlayer(); return true; } ry += SUB_H + 2;
         if (hitSub(x, y, cx, ry, cw)) { if (pathfinderDebugModule != null) pathfinderDebugModule.setStopFromPlayer(); return true; } ry += SUB_H + 2;
         if (hitSub(x, y, cx, ry, cw)) { if (pathfinderDebugModule != null) pathfinderDebugModule.go(); return true; } ry += SUB_H + 2;
+        if (hitSub(x, y, cx, ry, cw)) {
+            if (pathfinderDebugModule != null) {
+                String[] parts = pathfinderCoordsInput.trim().split("\\s+");
+                if (parts.length == 3) {
+                    try {
+                        int px = Integer.parseInt(parts[0]);
+                        int py = Integer.parseInt(parts[1]);
+                        int pz = Integer.parseInt(parts[2]);
+                        pathfinderDebugModule.goToCoords(px, py, pz);
+                    } catch (NumberFormatException ignored) {
+                    }
+                }
+            }
+            return true;
+        }
+        ry += SUB_H + 2;
+        int coordsLeft = cx + PAD + 12, coordsRight = cx + cw - PAD;
+        if (x >= coordsLeft && x < coordsRight && y >= ry && y < ry + SUB_H) {
+            pathfinderCoordsFocused = true;
+            return true;
+        }
+        pathfinderCoordsFocused = false;
+        ry += SUB_H + 2;
         if (hitSub(x, y, cx, ry, cw)) { if (pathfinderDebugModule != null) pathfinderDebugModule.stop(); return true; } ry += SUB_H + 2;
         if (hitSub(x, y, cx, ry, cw)) { if (pathfinderDebugModule != null) pathfinderDebugModule.clearPoints(); return true; } ry += SUB_H + 2;
         if (hitSub(x, y, cx, ry, cw)) { if (pathfinderDebugModule != null) pathfinderDebugModule.cycleVerbosity(dir(x, cx, cw)); return true; } ry += SUB_H;
@@ -1028,6 +1063,42 @@ public class n0nameScreen extends Screen {
     @Override
     public boolean keyPressed(KeyInput key) {
         if (key.key() == GLFW.GLFW_KEY_ESCAPE || key.key() == GLFW.GLFW_KEY_RIGHT_SHIFT) { close(); return true; }
+        if (pathfinderCoordsFocused) {
+            if (key.key() == GLFW.GLFW_KEY_BACKSPACE && !pathfinderCoordsInput.isEmpty()) {
+                pathfinderCoordsInput = pathfinderCoordsInput.substring(0, pathfinderCoordsInput.length() - 1);
+                return true;
+            }
+            if (key.key() == GLFW.GLFW_KEY_ENTER || key.key() == GLFW.GLFW_KEY_KP_ENTER) {
+                if (pathfinderDebugModule != null) {
+                    String[] parts = pathfinderCoordsInput.trim().split("\\s+");
+                    if (parts.length == 3) {
+                        try {
+                            int px = Integer.parseInt(parts[0]);
+                            int py = Integer.parseInt(parts[1]);
+                            int pz = Integer.parseInt(parts[2]);
+                            pathfinderDebugModule.goToCoords(px, py, pz);
+                        } catch (NumberFormatException ignored) {
+                        }
+                    }
+                }
+                return true;
+            }
+            if (key.key() == GLFW.GLFW_KEY_SPACE) {
+                if (pathfinderCoordsInput.length() < 32 && !pathfinderCoordsInput.endsWith(" ")) {
+                    pathfinderCoordsInput += " ";
+                }
+                return true;
+            }
+            if (key.key() == GLFW.GLFW_KEY_MINUS) {
+                if (pathfinderCoordsInput.length() < 32) pathfinderCoordsInput += "-";
+                return true;
+            }
+            char c = k2c(key.key());
+            if (c != 0 && pathfinderCoordsInput.length() < 32) {
+                pathfinderCoordsInput += c;
+                return true;
+            }
+        }
         if (ex("patchcreator")) {
             if (key.key() == GLFW.GLFW_KEY_BACKSPACE && !routeNameInput.isEmpty()) {
                 routeNameInput = routeNameInput.substring(0, routeNameInput.length() - 1); return true;
@@ -1190,6 +1261,12 @@ public class n0nameScreen extends Screen {
         ModConfig.AutoFarmPriority[] v = ModConfig.AutoFarmPriority.values();
         if (d == 0) d = 1;
         cfg.setAutoFarmPriority(v[(cfg.getAutoFarmPriority().ordinal() + d + v.length) % v.length]);
+    }
+
+    private void cycleAimProfile(ModConfig cfg, int d) {
+        ModConfig.AimProfile[] v = ModConfig.AimProfile.values();
+        if (d == 0) d = 1;
+        cfg.setAimProfile(v[(cfg.getAimProfile().ordinal() + d + v.length) % v.length]);
     }
 
     private void handleEspClick(int clickX, int cx, int cw, String id,

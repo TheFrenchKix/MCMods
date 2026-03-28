@@ -1,32 +1,40 @@
 package com.mwa.n0name.movement;
 
 import com.mwa.n0name.DebugLogger;
+import com.mwa.n0name.ModConfig;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.network.ClientPlayerEntity;
 import net.minecraft.util.math.MathHelper;
 import net.minecraft.util.math.Vec3d;
 
-import java.util.Random;
-
 public class AimController {
 
-    private static final float FAST_SMOOTHING = 0.18f;
-    private static final float NORMAL_SMOOTHING = 0.06f;
-    private static final float FAST_ROTATION_SPEED = 8.5f;
-    private static final float NORMAL_ROTATION_SPEED = 4.8f;
-    private static final int FAST_UPDATE_INTERVAL = 1;
-    private static final int NORMAL_UPDATE_INTERVAL = 2;
+    private static final float STEADY_ROTATION_SPEED = 90.0f;    // deg/s
+    private static final float BALANCED_ROTATION_SPEED = 120.0f; // deg/s
+    private static final float SNAPPY_ROTATION_SPEED = 170.0f;   // deg/s
+    private static final float STEADY_ACCELERATION = 320.0f;     // deg/s^2
+    private static final float BALANCED_ACCELERATION = 420.0f;   // deg/s^2
+    private static final float SNAPPY_ACCELERATION = 720.0f;     // deg/s^2
+    private static final float STEADY_GAIN = 3.4f;
+    private static final float BALANCED_GAIN = 4.5f;
+    private static final float SNAPPY_GAIN = 6.2f;
+    private static final float FAST_ROTATION_MULTIPLIER = 1.55f;
+    private static final float FAST_ACCELERATION_MULTIPLIER = 1.90f;
+    private static final float FAST_GAIN_MULTIPLIER = 1.28f;
+    private static final long FAST_UPDATE_INTERVAL_NANOS = 5_000_000L;   // 5ms
+    private static final long NORMAL_UPDATE_INTERVAL_NANOS = 8_000_000L; // 8ms
+    private static final float DEADZONE_DEGREES = 0.08f;
 
     private Vec3d target = null;
     private boolean active = false;
-    private float smoothingFactor = NORMAL_SMOOTHING;
-    private float maxRotationSpeed = NORMAL_ROTATION_SPEED;
+    private float maxRotationSpeed = BALANCED_ROTATION_SPEED;
+    private float maxAcceleration = BALANCED_ACCELERATION;
+    private float responseGain = BALANCED_GAIN;
     private boolean fastTracking = false;
     private float yawVelocity = 0.0f;
     private float pitchVelocity = 0.0f;
     private int debugLogCooldown = 0;
-    private int updateCooldown = 0;
-    private final Random noiseRandom = new Random();
+    private long lastUpdateNanos = 0L;
 
     public void setTarget(Vec3d target) {
         this.target = target;
@@ -47,19 +55,20 @@ public class AimController {
         this.yawVelocity = 0.0f;
         this.pitchVelocity = 0.0f;
         this.debugLogCooldown = 0;
-        this.updateCooldown = 0;
+        this.lastUpdateNanos = 0L;
     }
 
     public boolean isActive() { return active; }
 
     public void setFastTracking(boolean fast) {
         this.fastTracking = fast;
-        this.smoothingFactor = fast ? FAST_SMOOTHING : NORMAL_SMOOTHING;
-        this.maxRotationSpeed = fast ? FAST_ROTATION_SPEED : NORMAL_ROTATION_SPEED;
+        refreshTuning();
     }
 
     public void setSmoothingFactor(float factor) {
-        this.smoothingFactor = MathHelper.clamp(factor, 0.01f, 1.0f);
+        float f = MathHelper.clamp(factor, 0.01f, 1.0f);
+        refreshTuning();
+        this.responseGain *= f;
     }
 
     public void setMaxRotationSpeed(float speed) {
@@ -69,14 +78,21 @@ public class AimController {
     public void tick() {
         if (!active || target == null) return;
 
+        refreshTuning();
+
         MinecraftClient client = MinecraftClient.getInstance();
         ClientPlayerEntity player = client.player;
         if (player == null) return;
 
-        if (--updateCooldown > 0) {
+        long now = System.nanoTime();
+        long minInterval = fastTracking ? FAST_UPDATE_INTERVAL_NANOS : NORMAL_UPDATE_INTERVAL_NANOS;
+        if (lastUpdateNanos != 0L && now - lastUpdateNanos < minInterval) {
             return;
         }
-        updateCooldown = fastTracking ? FAST_UPDATE_INTERVAL : NORMAL_UPDATE_INTERVAL;
+
+        float dt = lastUpdateNanos == 0L ? 0.016f : (now - lastUpdateNanos) / 1_000_000_000.0f;
+        dt = MathHelper.clamp(dt, 0.005f, 0.050f);
+        lastUpdateNanos = now;
 
         double dx = target.x - player.getX();
         double dy = target.y - player.getEyeY();
@@ -94,14 +110,8 @@ public class AimController {
         float yawDelta = MathHelper.wrapDegrees(targetYaw - currentYaw);
         float pitchDelta = targetPitch - currentPitch;
 
-        float yawStep = smoothDelta(yawDelta, true);
-        float pitchStep = smoothDelta(pitchDelta, false);
-
-        // Humanized occasional micro hesitation to avoid robotic perfect tracking.
-        if (!fastTracking && Math.abs(yawDelta) < 1.2f && Math.abs(pitchDelta) < 1.2f && noiseRandom.nextFloat() < 0.18f) {
-            yawStep *= 0.35f;
-            pitchStep *= 0.35f;
-        }
+        float yawStep = integrateAxis(yawDelta, true, dt);
+        float pitchStep = integrateAxis(pitchDelta, false, dt);
 
         player.setYaw(currentYaw + yawStep);
         player.setPitch(MathHelper.clamp(currentPitch + pitchStep, -90.0f, 90.0f));
@@ -139,38 +149,85 @@ public class AimController {
         ClientPlayerEntity player = client.player;
         if (player == null) return;
 
-        float constrained = MathHelper.clamp(yawOffset, -1.25f, 1.25f);
-        float humanized = constrained * (0.75f + noiseRandom.nextFloat() * 0.2f);
-        player.setYaw(player.getYaw() + humanized);
+        float constrained = MathHelper.clamp(yawOffset, -1.0f, 1.0f);
+        player.setYaw(player.getYaw() + constrained * 0.2f);
     }
 
-    private float smoothDelta(float delta, boolean yawAxis) {
-        float absDelta = Math.abs(delta);
-        float easing = smoothStep(0.0f, fastTracking ? 50.0f : 30.0f, absDelta);
-        float desiredStep = delta * (smoothingFactor + easing * (fastTracking ? 0.13f : 0.08f));
-        float noiseScale = fastTracking
-            ? (0.92f + noiseRandom.nextFloat() * 0.10f)
-            : (0.82f + noiseRandom.nextFloat() * 0.14f);
-        desiredStep *= noiseScale;
-        float maxStep = Math.min(maxRotationSpeed,
-            (fastTracking ? 1.8f : 0.95f) + (float) Math.sqrt(absDelta) * (fastTracking ? 2.0f : 1.35f));
+    private void refreshTuning() {
+        ModConfig.AimProfile profile = ModConfig.getInstance().getAimProfile();
+        float baseSpeed;
+        float baseAcceleration;
+        float baseGain;
 
-        if (yawAxis) {
-            yawVelocity += (desiredStep - yawVelocity) * (fastTracking ? 0.27f : 0.20f);
-            yawVelocity = MathHelper.clamp(yawVelocity, -maxStep, maxStep);
-            if (absDelta < 0.35f) yawVelocity = delta;
-            return yawVelocity;
+        switch (profile) {
+            case STEADY -> {
+                baseSpeed = STEADY_ROTATION_SPEED;
+                baseAcceleration = STEADY_ACCELERATION;
+                baseGain = STEADY_GAIN;
+            }
+            case SNAPPY -> {
+                baseSpeed = SNAPPY_ROTATION_SPEED;
+                baseAcceleration = SNAPPY_ACCELERATION;
+                baseGain = SNAPPY_GAIN;
+            }
+            case BALANCED -> {
+                baseSpeed = BALANCED_ROTATION_SPEED;
+                baseAcceleration = BALANCED_ACCELERATION;
+                baseGain = BALANCED_GAIN;
+            }
+            default -> {
+                baseSpeed = BALANCED_ROTATION_SPEED;
+                baseAcceleration = BALANCED_ACCELERATION;
+                baseGain = BALANCED_GAIN;
+            }
         }
 
-        pitchVelocity += (desiredStep - pitchVelocity) * (fastTracking ? 0.24f : 0.18f);
-        pitchVelocity = MathHelper.clamp(pitchVelocity, -maxStep, maxStep);
-        if (absDelta < 0.35f) pitchVelocity = delta;
-        return pitchVelocity;
+        if (fastTracking) {
+            maxRotationSpeed = baseSpeed * FAST_ROTATION_MULTIPLIER;
+            maxAcceleration = baseAcceleration * FAST_ACCELERATION_MULTIPLIER;
+            responseGain = baseGain * FAST_GAIN_MULTIPLIER;
+        } else {
+            maxRotationSpeed = baseSpeed;
+            maxAcceleration = baseAcceleration;
+            responseGain = baseGain;
+        }
     }
 
-    private float smoothStep(float edge0, float edge1, float value) {
-        if (edge0 == edge1) return value >= edge1 ? 1.0f : 0.0f;
-        float t = MathHelper.clamp((value - edge0) / (edge1 - edge0), 0.0f, 1.0f);
-        return t * t * (3.0f - 2.0f * t);
+    private float integrateAxis(float delta, boolean yawAxis, float dt) {
+        if (Math.abs(delta) <= DEADZONE_DEGREES) {
+            if (yawAxis) {
+                yawVelocity = 0.0f;
+            } else {
+                pitchVelocity = 0.0f;
+            }
+            return delta;
+        }
+
+        float desiredVelocity = MathHelper.clamp(delta * responseGain, -maxRotationSpeed, maxRotationSpeed);
+        float currentVelocity = yawAxis ? yawVelocity : pitchVelocity;
+        float velocityDelta = desiredVelocity - currentVelocity;
+        float maxVelocityDelta = maxAcceleration * dt;
+        float nextVelocity;
+
+        if (velocityDelta > maxVelocityDelta) {
+            nextVelocity = currentVelocity + maxVelocityDelta;
+        } else if (velocityDelta < -maxVelocityDelta) {
+            nextVelocity = currentVelocity - maxVelocityDelta;
+        } else {
+            nextVelocity = desiredVelocity;
+        }
+
+        float step = nextVelocity * dt;
+        if (Math.abs(step) > Math.abs(delta)) {
+            step = delta;
+            nextVelocity = 0.0f;
+        }
+
+        if (yawAxis) {
+            yawVelocity = nextVelocity;
+        } else {
+            pitchVelocity = nextVelocity;
+        }
+        return step;
     }
 }

@@ -53,8 +53,11 @@ public class AutoSlayModule {
 
     private int scanCooldown = 0;
     private int repathCooldown = 0;
+    private int outOfRangeCooldown = 0;
     private static final int SCAN_INTERVAL = 5;
     private static final int REPATH_INTERVAL = 40;
+    private static final int OUT_OF_RANGE_COOLDOWN_TICKS = 10;
+    private static final int PATH_RETRY_COOLDOWN_TICKS = 8;
     private static final int MAX_PATH_FAILURES_BEFORE_SWITCH = 4;
     private static final int MAX_STEP_SUBGOAL_DISTANCE = 12;
     private static final int MIN_STEP_SUBGOAL_DISTANCE = 4;
@@ -67,6 +70,16 @@ public class AutoSlayModule {
     private static final int PATH_TARGET_COLOR = 0xFF3333;
 
     private int consecutivePathFailures = 0;
+    private int pathRetryCooldown = 0;
+    private int attackNotVisibleTicks = 0;
+    private static final int MAX_NOT_VISIBLE_ATTACK_TICKS = 6;
+
+    public void frameUpdate() {
+        if (aimController.isActive()) {
+            aimController.tick();
+        }
+        movementController.frameUpdate();
+    }
 
     public AimController getAimController() { return aimController; }
 
@@ -88,6 +101,13 @@ public class AutoSlayModule {
         double scanRange = config.getAutoFarmRange();
         double attackRange = config.getAttackRange();
 
+        if (outOfRangeCooldown > 0) {
+            outOfRangeCooldown--;
+        }
+        if (pathRetryCooldown > 0) {
+            pathRetryCooldown--;
+        }
+
         if (--scanCooldown <= 0) {
             scanCooldown = SCAN_INTERVAL;
             findTarget(client, player, config, scanRange);
@@ -102,9 +122,7 @@ public class AutoSlayModule {
             }
             double dist = Math.sqrt(player.squaredDistanceTo(currentTarget));
             if (dist > scanRange) {
-                DebugLogger.log("AutoSlay", "Target out of range");
-                reset();
-                scanCooldown = 0;
+                handleOutOfRangeTarget();
                 return;
             }
         }
@@ -119,7 +137,9 @@ public class AutoSlayModule {
         switch (state) {
             case IDLE -> {
                 if (dist > attackRange) {
-                    computePathToTarget(client, player);
+                    if (pathRetryCooldown <= 0) {
+                        computePathToTarget(client, player);
+                    }
                 } else {
                     state = State.ATTACKING;
                     movementController.stop();
@@ -222,6 +242,12 @@ public class AutoSlayModule {
         if (currentTarget == null || client.world == null) return;
 
         BlockPos playerPos = player.getBlockPos();
+        playerPos = sanitizeWalkableAnchor(client, playerPos, "player");
+        if (playerPos == null) {
+            onPathFailed(player, "Player anchor is not walkable");
+            return;
+        }
+
         BlockPos targetPosRaw = new BlockPos(
             (int) Math.floor(currentTarget.getX()),
             (int) Math.floor(currentTarget.getY()),
@@ -270,7 +296,6 @@ public class AutoSlayModule {
         aimController.setEntityTarget(
             currentTarget.getX(), currentTarget.getY(), currentTarget.getZ(), entityHeight);
         aimController.setFastTracking(false);
-        aimController.tick();
 
         movementController.tick();
 
@@ -315,20 +340,28 @@ public class AutoSlayModule {
         if (dist > attackRange + 1.0) {
             state = State.IDLE;
             releaseKeys();
+            attackNotVisibleTicks = 0;
             return;
         }
 
-        if (config.isAutoFarmRequireLineOfSight() && !player.canSee(currentTarget)) {
-            state = State.IDLE;
+        // Always require line of sight while attacking. If the target is close but hidden,
+        // leave attack mode and let the state machine refresh positioning/pathing.
+        if (!player.canSee(currentTarget)) {
+            attackNotVisibleTicks++;
             releaseKeys();
+            if (attackNotVisibleTicks > MAX_NOT_VISIBLE_ATTACK_TICKS) {
+                attackNotVisibleTicks = 0;
+                state = State.IDLE;
+                DebugLogger.log("AutoSlay", "Target not visible in attack range, re-pathing");
+            }
             return;
         }
+        attackNotVisibleTicks = 0;
 
         double entityHeight = getEntityHeight(currentTarget);
         aimController.setEntityTarget(
             currentTarget.getX(), currentTarget.getY(), currentTarget.getZ(), entityHeight);
         aimController.setFastTracking(true);
-        aimController.tick();
 
         if (dist > attackRange * 0.8) {
             client.options.forwardKey.setPressed(true);
@@ -380,6 +413,8 @@ public class AutoSlayModule {
         releaseKeys();
         scanCooldown = 0;
         consecutivePathFailures = 0;
+        pathRetryCooldown = 0;
+        attackNotVisibleTicks = 0;
     }
 
     private void releaseKeys() {
@@ -401,7 +436,9 @@ public class AutoSlayModule {
         consecutivePathFailures++;
         state = State.IDLE;
         currentPath = Collections.emptyList();
-        movementController.stop();
+        if (movementController.getState() != MovementController.WalkState.IDLE) {
+            movementController.stop();
+        }
 
         String targetName = currentTarget == null ? "-" : currentTarget.getDisplayName().getString();
         DebugLogger.log("AutoSlay", reason + " (target=" + targetName + ", fail=" + consecutivePathFailures + ")");
@@ -411,15 +448,37 @@ public class AutoSlayModule {
             currentTarget = null;
             consecutivePathFailures = 0;
             scanCooldown = 0;
+            pathRetryCooldown = 0;
             releaseKeys();
             return;
         }
 
         // Try scanning sooner after a failed attempt.
         scanCooldown = Math.min(scanCooldown, 2);
+        pathRetryCooldown = PATH_RETRY_COOLDOWN_TICKS;
         if (player != null) {
             repathCooldown = 0;
         }
+    }
+
+    private void handleOutOfRangeTarget() {
+        if (outOfRangeCooldown <= 0) {
+            DebugLogger.log("AutoSlay", "Target out of range");
+            outOfRangeCooldown = OUT_OF_RANGE_COOLDOWN_TICKS;
+        } else {
+            outOfRangeCooldown--;
+        }
+
+        currentTarget = null;
+        state = State.IDLE;
+        currentPath = Collections.emptyList();
+        if (movementController.getState() != MovementController.WalkState.IDLE) {
+            movementController.stop();
+        }
+        aimController.clearTarget();
+        releaseKeys();
+        scanCooldown = 0;
+        pathRetryCooldown = 0;
     }
 
     private BlockPos sanitizeWalkableAnchor(MinecraftClient client, BlockPos anchor, String label) {

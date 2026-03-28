@@ -35,6 +35,12 @@ public class AutoCropModule {
     private int jitterCooldown = 0;
     private final Random random = new Random();
 
+    public void frameUpdate() {
+        if (aimController.isActive()) {
+            aimController.tick();
+        }
+    }
+
     public void tick() {
         boolean active = ModConfig.getInstance().isAutoCropEnabled();
 

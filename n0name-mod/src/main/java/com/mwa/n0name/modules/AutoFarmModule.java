@@ -65,8 +65,15 @@ public class AutoFarmModule {
     private int cropBreakFailures = 0;
     private int jitterCooldown = 0;
     private final Random random = new Random();
-    private static final int SCAN_INTERVAL = 10;
+    private static final int SCAN_INTERVAL = 4;
     private static final int REPATH_INTERVAL = 40;
+
+    public void frameUpdate() {
+        if (aimController.isActive()) {
+            aimController.tick();
+        }
+        movementController.frameUpdate();
+    }
 
     // Render colors
     private static final int TARGET_BOX_COLOR = 0xFF00FF00;  // Green

@@ -36,6 +36,12 @@ public class ModConfig {
         TURBO
     }
 
+    public enum AimProfile {
+        STEADY,
+        BALANCED,
+        SNAPPY
+    }
+
     private static final ModConfig INSTANCE = new ModConfig();
     public static ModConfig getInstance() { return INSTANCE; }
 
@@ -74,6 +80,7 @@ public class ModConfig {
     private int autoFarmCropBlocksPerTick = 2;
     private boolean autoFarmReplant = true;
     private JacobPreset jacobPreset = JacobPreset.BALANCED;
+    private AimProfile aimProfile = AimProfile.BALANCED;
 
     // --- Skyblock automation safeguards ---
     private boolean gardenLaneLoopEnabled = false;
@@ -291,6 +298,10 @@ public class ModConfig {
     public JacobPreset getJacobPreset() { return jacobPreset; }
     public void setJacobPreset(JacobPreset v) {
         jacobPreset = (v == null) ? JacobPreset.BALANCED : v;
+    }
+    public AimProfile getAimProfile() { return aimProfile; }
+    public void setAimProfile(AimProfile v) {
+        aimProfile = (v == null) ? AimProfile.BALANCED : v;
     }
 
     public boolean isGardenLaneLoopEnabled() { return gardenLaneLoopEnabled; }

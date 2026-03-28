@@ -30,7 +30,6 @@ import net.fabricmc.fabric.api.client.rendering.v1.HudRenderCallback;
 import net.fabricmc.fabric.api.client.rendering.v1.world.WorldRenderEvents;
 import net.minecraft.client.option.KeyBinding;
 import net.minecraft.client.util.InputUtil;
-import net.minecraft.text.Text;
 import org.lwjgl.glfw.GLFW;
 
 public class n0nameMod implements ClientModInitializer {
@@ -56,20 +55,7 @@ public class n0nameMod implements ClientModInitializer {
     private final RouteHeatmapModule routeHeatmapModule = new RouteHeatmapModule();
     private final InventoryHudModule inventoryHudModule = new InventoryHudModule();
     private final HypixelStatsHudModule hypixelStatsHudModule = new HypixelStatsHudModule(timeLoggerModule);
-
     private KeyBinding menuKey;
-    private KeyBinding macro1Key;
-    private KeyBinding macro2Key;
-    private KeyBinding macro3Key;
-    private KeyBinding saveWaypointKey;
-    private KeyBinding recallWaypointKey;
-    private KeyBinding cropModeKey;
-    private KeyBinding cropTypeKey;
-    private KeyBinding cropAutoToolKey;
-    private KeyBinding cropSilentAimKey;
-    private KeyBinding laneLoopKey;
-    private KeyBinding waypointChainKey;
-    private KeyBinding jacobPresetKey;
 
     @Override
     public void onInitializeClient() {
@@ -80,7 +66,7 @@ public class n0nameMod implements ClientModInitializer {
         n0nameScreen.setModuleReferences(patchCreatorModule, waypointManagerModule, timeLoggerModule,
             routeHeatmapModule, blockESP, entityESP, pathfinderDebugModule);
 
-        // Register keybinding
+        // Single keybind: open ClickGUI with Right Shift.
         menuKey = KeyBindingHelper.registerKeyBinding(new KeyBinding(
             "key.n0name.menu",
             InputUtil.Type.KEYSYM,
@@ -88,95 +74,12 @@ public class n0nameMod implements ClientModInitializer {
             KeyBinding.Category.MISC
         ));
 
-        macro1Key = KeyBindingHelper.registerKeyBinding(new KeyBinding(
-            "key.n0name.macro1", InputUtil.Type.KEYSYM, GLFW.GLFW_KEY_F6, KeyBinding.Category.MISC));
-        macro2Key = KeyBindingHelper.registerKeyBinding(new KeyBinding(
-            "key.n0name.macro2", InputUtil.Type.KEYSYM, GLFW.GLFW_KEY_F7, KeyBinding.Category.MISC));
-        macro3Key = KeyBindingHelper.registerKeyBinding(new KeyBinding(
-            "key.n0name.macro3", InputUtil.Type.KEYSYM, GLFW.GLFW_KEY_F8, KeyBinding.Category.MISC));
-
-        saveWaypointKey = KeyBindingHelper.registerKeyBinding(new KeyBinding(
-            "key.n0name.waypoint.save", InputUtil.Type.KEYSYM, GLFW.GLFW_KEY_F9, KeyBinding.Category.MISC));
-        recallWaypointKey = KeyBindingHelper.registerKeyBinding(new KeyBinding(
-            "key.n0name.waypoint.recall", InputUtil.Type.KEYSYM, GLFW.GLFW_KEY_F10, KeyBinding.Category.MISC));
-
-        cropModeKey = KeyBindingHelper.registerKeyBinding(new KeyBinding(
-            "key.n0name.crop.mode", InputUtil.Type.KEYSYM, GLFW.GLFW_KEY_F3, KeyBinding.Category.MISC));
-        cropTypeKey = KeyBindingHelper.registerKeyBinding(new KeyBinding(
-            "key.n0name.crop.type", InputUtil.Type.KEYSYM, GLFW.GLFW_KEY_F4, KeyBinding.Category.MISC));
-        cropAutoToolKey = KeyBindingHelper.registerKeyBinding(new KeyBinding(
-            "key.n0name.crop.autotool", InputUtil.Type.KEYSYM, GLFW.GLFW_KEY_F2, KeyBinding.Category.MISC));
-        cropSilentAimKey = KeyBindingHelper.registerKeyBinding(new KeyBinding(
-            "key.n0name.crop.silentaim", InputUtil.Type.KEYSYM, GLFW.GLFW_KEY_F1, KeyBinding.Category.MISC));
-        laneLoopKey = KeyBindingHelper.registerKeyBinding(new KeyBinding(
-            "key.n0name.lane.loop", InputUtil.Type.KEYSYM, GLFW.GLFW_KEY_F11, KeyBinding.Category.MISC));
-        waypointChainKey = KeyBindingHelper.registerKeyBinding(new KeyBinding(
-            "key.n0name.waypoint.chain", InputUtil.Type.KEYSYM, GLFW.GLFW_KEY_F12, KeyBinding.Category.MISC));
-        jacobPresetKey = KeyBindingHelper.registerKeyBinding(new KeyBinding(
-            "key.n0name.jacob.preset", InputUtil.Type.KEYSYM, GLFW.GLFW_KEY_F5, KeyBinding.Category.MISC));
-
         // Tick all modules
         ClientTickEvents.END_CLIENT_TICK.register(client -> {
             while (menuKey.wasPressed()) {
                 if (client.currentScreen == null) {
                     client.setScreen(new n0nameScreen());
                 }
-            }
-
-            while (macro1Key.wasPressed()) commandMacroModule.executeMacro(1);
-            while (macro2Key.wasPressed()) commandMacroModule.executeMacro(2);
-            while (macro3Key.wasPressed()) commandMacroModule.executeMacro(3);
-
-            while (saveWaypointKey.wasPressed()) {
-                waypointManagerModule.saveCurrentToSlot(resolveWaypointSlot(client));
-            }
-            while (recallWaypointKey.wasPressed()) {
-                waypointManagerModule.recallSlot(resolveWaypointSlot(client));
-            }
-
-            while (cropModeKey.wasPressed()) {
-                ModConfig cfg = ModConfig.getInstance();
-                cfg.setAutoFarmMode(cfg.getAutoFarmMode() == ModConfig.AutoFarmMode.MOBS
-                    ? ModConfig.AutoFarmMode.CROPS
-                    : ModConfig.AutoFarmMode.MOBS);
-                sendStatus(client, "AutoFarm mode: " + cfg.getAutoFarmMode().name());
-            }
-            while (cropTypeKey.wasPressed()) {
-                ModConfig cfg = ModConfig.getInstance();
-                ModConfig.CropType[] values = ModConfig.CropType.values();
-                int next = (cfg.getCropType().ordinal() + 1) % values.length;
-                cfg.setCropType(values[next]);
-                sendStatus(client, "Crop type: " + cfg.getCropType().name());
-            }
-            while (cropAutoToolKey.wasPressed()) {
-                ModConfig cfg = ModConfig.getInstance();
-                cfg.setAutoFarmAutoTool(!cfg.isAutoFarmAutoTool());
-                sendStatus(client, "Crop Auto Tool: " + (cfg.isAutoFarmAutoTool() ? "ON" : "OFF"));
-            }
-            while (cropSilentAimKey.wasPressed()) {
-                ModConfig cfg = ModConfig.getInstance();
-                cfg.setAutoFarmSilentCropAim(!cfg.isAutoFarmSilentCropAim());
-                sendStatus(client, "Crop Silent Aim: " + (cfg.isAutoFarmSilentCropAim() ? "ON" : "OFF"));
-            }
-            while (laneLoopKey.wasPressed()) {
-                ModConfig cfg = ModConfig.getInstance();
-                cfg.setGardenLaneLoopEnabled(!cfg.isGardenLaneLoopEnabled());
-                sendStatus(client, "Lane Loop: " + (cfg.isGardenLaneLoopEnabled() ? "ON" : "OFF"));
-            }
-            while (waypointChainKey.wasPressed()) {
-                ModConfig cfg = ModConfig.getInstance();
-                cfg.setWaypointChainEnabled(!cfg.isWaypointChainEnabled());
-                if (!cfg.isWaypointChainEnabled()) {
-                    waypointManagerModule.stopChain();
-                }
-                sendStatus(client, "Waypoint Chain: " + (cfg.isWaypointChainEnabled() ? "ON" : "OFF"));
-            }
-            while (jacobPresetKey.wasPressed()) {
-                ModConfig cfg = ModConfig.getInstance();
-                ModConfig.JacobPreset[] presets = ModConfig.JacobPreset.values();
-                int next = (cfg.getJacobPreset().ordinal() + 1) % presets.length;
-                cfg.applyJacobPreset(presets[next]);
-                sendStatus(client, "Jacob preset: " + cfg.getJacobPreset().name());
             }
 
             antiAfkModule.tick();
@@ -206,6 +109,12 @@ public class n0nameMod implements ClientModInitializer {
 
         // Render all ESP and paths
         WorldRenderEvents.AFTER_ENTITIES.register(context -> {
+            autoFarmModule.frameUpdate();
+            autoMineModule.frameUpdate();
+            autoSlayModule.frameUpdate();
+            autoCropModule.frameUpdate();
+            pathfinderDebugModule.frameUpdate();
+
             blockESP.render(context);
             entityESP.render(context);
             antiAfkModule.render(context);
@@ -226,23 +135,6 @@ public class n0nameMod implements ClientModInitializer {
             pathfinderDebugModule.renderHud(drawContext);
         });
 
-        DebugLogger.info("Ready - RSHIFT to open menu");
-    }
-
-    private int resolveWaypointSlot(net.minecraft.client.MinecraftClient client) {
-        var window = client.getWindow();
-        boolean shift = InputUtil.isKeyPressed(window, GLFW.GLFW_KEY_LEFT_SHIFT)
-            || InputUtil.isKeyPressed(window, GLFW.GLFW_KEY_RIGHT_SHIFT);
-        boolean alt = InputUtil.isKeyPressed(window, GLFW.GLFW_KEY_LEFT_ALT)
-            || InputUtil.isKeyPressed(window, GLFW.GLFW_KEY_RIGHT_ALT);
-        if (alt) return 3;
-        if (shift) return 2;
-        return 1;
-    }
-
-    private void sendStatus(net.minecraft.client.MinecraftClient client, String message) {
-        if (client.player != null) {
-            client.player.sendMessage(Text.literal("[n0name] " + message), true);
-        }
+        DebugLogger.info("Ready");
     }
 }
