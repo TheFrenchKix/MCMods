@@ -1,6 +1,9 @@
 package com.mwa.n0name.gui;
 
 import com.mwa.n0name.ModConfig;
+import com.mwa.n0name.macro.Macro;
+import com.mwa.n0name.macro.MacroManagerModule;
+import com.mwa.n0name.macro.MacroType;
 import com.mwa.n0name.modules.PatchCreatorModule;
 import com.mwa.n0name.modules.PathfinderDebugModule;
 import com.mwa.n0name.modules.RouteHeatmapModule;
@@ -35,6 +38,7 @@ public class n0nameScreen extends Screen {
     private static PathfinderDebugModule pathfinderDebugModule;
     private static BlockESP blockEspModule;
     private static EntityESP entityEspModule;
+    private static MacroManagerModule macroManagerModule;
 
     public static void setModuleReferences(PatchCreatorModule pc) { patchCreatorModule = pc; }
     public static void setModuleReferences(PatchCreatorModule pc, WaypointManagerModule wp, TimeLoggerModule tl) {
@@ -56,6 +60,7 @@ public class n0nameScreen extends Screen {
         entityEspModule = ee;
         pathfinderDebugModule = pd;
     }
+    public static void setMacroModule(MacroManagerModule mm) { macroManagerModule = mm; }
 
     // --- Category ---
     private enum Cat {
@@ -65,6 +70,7 @@ public class n0nameScreen extends Screen {
         VISUAL("Visual",       0xFF55DDDD),
         UTILITIES("Utilities", 0xFFCCCC44),
         HYPIXEL("Hypixel",     0xFFFF8844),
+        MACROS("Macros",       0xFF44DDFF),
         MISC("Misc",           0xFFAAAAAA);
         final String label; final int color;
         Cat(String l, int c) { label = l; color = c; }
@@ -85,6 +91,9 @@ public class n0nameScreen extends Screen {
     private String activeSlider = null;
     private String pathfinderCoordsInput = "";
     private boolean pathfinderCoordsFocused = false;
+    private String macroNameInput = "macro1";
+    private boolean macroNameFocused = false;
+    private int macroScroll = 0;
     private int lastContentHeight = 0;
 
     // --- Dimensions ---
@@ -155,7 +164,7 @@ public class n0nameScreen extends Screen {
         float pulse = (float)(Math.sin(System.currentTimeMillis() / 800.0) * 0.3 + 0.7);
         ctx.fill(px, py, px + TOTAL_W, py + 2, ((int)(pulse * 255) << 24) | (C_ACCENT & 0x00FFFFFF));
         ctx.drawTextWithShadow(textRenderer, "n0name", px + 12, py + 10, C_ACCENT);
-        ctx.drawTextWithShadow(textRenderer, "v2.0", px + 12 + textRenderer.getWidth("n0name") + 6, py + 10, C_MUTED);
+        ctx.drawTextWithShadow(textRenderer, "v2.1.1", px + 12 + textRenderer.getWidth("n0name") + 6, py + 10, C_MUTED);
         ctx.drawTextWithShadow(textRenderer, "\u00D7", px + TOTAL_W - 16, py + 10, C_MUTED);
 
         // sidebar
@@ -208,6 +217,7 @@ public class n0nameScreen extends Screen {
             case VISUAL    -> renderVisual(ctx, cx, cy, cw, mx, my, cfg);
             case UTILITIES -> renderUtilities(ctx, cx, cy, cw, mx, my, cfg);
             case HYPIXEL   -> renderHypixel(ctx, cx, cy, cw, mx, my, cfg);
+            case MACROS    -> renderMacros(ctx, cx, cy, cw, mx, my, cfg);
             case MISC      -> renderMisc(ctx, cx, cy, cw, mx, my, cfg);
         };
     }
@@ -424,6 +434,105 @@ public class n0nameScreen extends Screen {
     }
 
     /* =========================================================
+     *  MACROS
+     * ========================================================= */
+    private int renderMacros(DrawContext ctx, int cx, int cy, int cw, int mx, int my, ModConfig cfg) {
+        int y = cy + PAD;
+
+        y = sectionTitle(ctx, cx, y, cw, "Macro Controls");
+
+        // Record / Stop button
+        boolean recording = macroManagerModule != null && macroManagerModule.isRecording();
+        y = btnRow(ctx, cx, y, cw, mx, my, recording ? "\u25A0 Stop Recording" : "\u25CF Start Recording");
+
+        // Play / Stop button
+        boolean executing = macroManagerModule != null && macroManagerModule.isExecuting();
+        y = btnRow(ctx, cx, y, cw, mx, my, executing ? "\u25A0 Stop Macro" : "\u25B6 Play Selected");
+
+        // Create macro button
+        y = btnRow(ctx, cx, y, cw, mx, my, "+ Create Macro");
+
+        // Macro name input
+        int inputLeft = cx + PAD + 12, inputRight = cx + cw - PAD;
+        ctx.fill(inputLeft, y, inputRight, y + SUB_H, 0xFF1A1A2E);
+        ctx.fill(inputLeft, y, inputLeft + 2, y + SUB_H, macroNameFocused ? C_ACCENT : 0xFF44506A);
+        String nameText = macroNameInput.isEmpty() ? "macro name" : macroNameInput;
+        ctx.drawTextWithShadow(textRenderer, nameText + (macroNameFocused ? "_" : ""), inputLeft + 8, y + 4,
+            macroNameInput.isEmpty() ? C_MUTED : C_TEXT);
+        y += SUB_H + 2;
+
+        // Open folder button
+        y = btnRow(ctx, cx, y, cw, mx, my, "\uD83D\uDCC1 Open Macros Folder");
+
+        // Status
+        if (macroManagerModule != null) {
+            if (recording) {
+                int steps = macroManagerModule.getRecorder().getCurrentMacro() != null ?
+                    macroManagerModule.getRecorder().getCurrentMacro().stepCount() : 0;
+                y = infoRow(ctx, cx, y, cw, "Recording: " + steps + " steps");
+            }
+            if (executing) {
+                y = infoRow(ctx, cx, y, cw, macroManagerModule.getExecutor().getStatusText());
+            }
+        }
+
+        y += 4;
+        y = sectionTitle(ctx, cx, y, cw, "Saved Macros");
+
+        // Macro list
+        if (macroManagerModule != null) {
+            java.util.List<Macro> macros = macroManagerModule.getAllMacros();
+            if (macros.isEmpty()) {
+                y = infoRow(ctx, cx, y, cw, "No macros saved");
+            } else {
+                int left = cx + PAD, right = cx + cw - PAD;
+                for (Macro macro : macros) {
+                    boolean selected = macro.getName().equals(macroManagerModule.getSelectedMacroName());
+                    ctx.fill(left, y, right, y + ROW_H + 4, selected ? C_CAT_SEL : C_CARD);
+                    if (mx >= left && mx < right && my >= y && my < y + ROW_H + 4)
+                        ctx.fill(left, y, right, y + ROW_H + 4, C_CARD_HOV);
+                    if (selected) ctx.fill(left, y + 2, left + 3, y + ROW_H + 2, Cat.MACROS.color);
+
+                    int mid = y + (ROW_H + 4) / 2;
+                    // Type indicator dot
+                    ctx.fill(left + 8, mid - 3, left + 14, mid + 3, macro.getType().color);
+                    // Name
+                    ctx.drawTextWithShadow(textRenderer, macro.getName(), left + 20, mid - 8, C_TEXT);
+                    // Info line
+                    String info = macro.getType().label + " | " + macro.stepCount() + " steps" +
+                        (macro.isRepeat() ? " | \u21BB" : "");
+                    ctx.drawTextWithShadow(textRenderer, info, left + 20, mid + 2, C_MUTED);
+
+                    // Play button
+                    int pbx = right - 92;
+                    ctx.fill(pbx, y + 3, pbx + 18, y + ROW_H + 1, C_BTN_ACT);
+                    ctx.drawTextWithShadow(textRenderer, "\u25B6", pbx + 5, mid - 4, C_ON);
+
+                    // Repeat toggle
+                    int rbx = right - 70;
+                    ctx.fill(rbx, y + 3, rbx + 18, y + ROW_H + 1, macro.isRepeat() ? 0xFF336633 : C_BTN);
+                    ctx.drawTextWithShadow(textRenderer, "\u21BB", rbx + 4, mid - 4, macro.isRepeat() ? C_ON : C_MUTED);
+
+                    // Delete button
+                    int dbx = right - 48;
+                    ctx.fill(dbx, y + 3, dbx + 18, y + ROW_H + 1, 0xFF442233);
+                    ctx.drawTextWithShadow(textRenderer, "\u00D7", dbx + 5, mid - 4, 0xFFFF6666);
+
+                    // Eye toggle button (show/hide 3D render)
+                    int ebx = right - 26;
+                    boolean vis = macroManagerModule.isRenderVisible(macro.getName());
+                    ctx.fill(ebx, y + 3, ebx + 18, y + ROW_H + 1, vis ? 0xFF1A4455 : C_BTN);
+                    ctx.drawTextWithShadow(textRenderer, "\u25CE", ebx + 4, mid - 4, vis ? C_ON : C_MUTED);
+
+                    y += ROW_H + 6;
+                }
+            }
+        }
+
+        return y + PAD - cy;
+    }
+
+    /* =========================================================
      *  MISC
      * ========================================================= */
     private int renderMisc(DrawContext ctx, int cx, int cy, int cw, int mx, int my, ModConfig cfg) {
@@ -431,6 +540,7 @@ public class n0nameScreen extends Screen {
 
         y = sectionTitle(ctx, cx, y, cw, "Movement");
         y = modRow(ctx, cx, y, cw, mx, my, "Anti-AFK", anim("afk"), Cat.MISC.color);
+        y = modRow(ctx, cx, y, cw, mx, my, "FreeCam", anim("freecam"), Cat.MISC.color);
         y = cycleRow(ctx, cx, y, cw, mx, my, "Aim Profile", cfg.getAimProfile().name());
 
         y += 4;
@@ -443,6 +553,7 @@ public class n0nameScreen extends Screen {
             y = sliderRow(ctx, cx, y, cw, mx, my, "Scan Range", cfg.getDebugScanRange(), 2.0, 32.0, 0);
         }
         y = modRow(ctx, cx, y, cw, mx, my, "Debug Log", anim("debug"), Cat.MISC.color);
+        y = checkRow(ctx, cx, y, cw, mx, my, "Render Scanned Blocks (F8)", cfg.isPathfindingDebugEnabled());
 
         y += 4;
         y = sectionTitle(ctx, cx, y, cw, "Pathfinder Debug");
@@ -740,6 +851,7 @@ public class n0nameScreen extends Screen {
             case VISUAL    -> clickVisual(cx(px), cy, CONTENT_W, x, y, cfg);
             case UTILITIES -> clickUtilities(cx(px), cy, CONTENT_W, x, y, cfg);
             case HYPIXEL   -> clickHypixel(cx(px), cy, CONTENT_W, x, y, cfg);
+            case MACROS    -> clickMacros(cx(px), cy, CONTENT_W, x, y, cfg);
             case MISC      -> clickMisc(cx(px), cy, CONTENT_W, x, y, cfg);
         };
     }
@@ -866,39 +978,6 @@ public class n0nameScreen extends Screen {
         }
 
         ry += 4 + 18;
-        if (hitModRow(x, y, cx, ry, cw)) { toggleOrExpand(x, cx, cw, "edgeguard", () -> cfg.setPreventLedgeFall(!cfg.isPreventLedgeFall())); return true; }
-        ry += ROW_H;
-        if (ex("edgeguard")) {
-            if (hitSub(x, y, cx, ry, cw)) { adj(x, cx, cw, () -> cfg.setLedgeMaxDrop(cfg.getLedgeMaxDrop() - 1), () -> cfg.setLedgeMaxDrop(cfg.getLedgeMaxDrop() + 1)); return true; } ry += SUB_H;
-        }
-
-        ry += 4 + 18;
-        if (hitModRow(x, y, cx, ry, cw)) { tog("patchcreator"); return true; }
-        ry += ROW_H;
-        if (ex("patchcreator")) {
-            if (hitSub(x, y, cx, ry, cw)) { if (patchCreatorModule != null) patchCreatorModule.startRecording(); return true; } ry += SUB_H + 2;
-            if (hitSub(x, y, cx, ry, cw)) { if (patchCreatorModule != null) { if (patchCreatorModule.isRecording()) patchCreatorModule.stopRecording(); else if (patchCreatorModule.isExecuting()) patchCreatorModule.stopExecution(); } return true; } ry += SUB_H + 2;
-            if (hitSub(x, y, cx, ry, cw)) { if (patchCreatorModule != null && !routeNameInput.isEmpty()) patchCreatorModule.saveRoute(routeNameInput); return true; } ry += SUB_H + 2;
-            ry += SUB_H + 2;
-            List<String> routes = cfg.getRouteNames();
-            if (!routes.isEmpty()) {
-                int count = Math.min(routes.size() - routeScroll, MAX_VIS);
-                int right = cx + cw - PAD;
-                for (int i = 0; i < count; i++) {
-                    int idx = routeScroll + i;
-                    if (idx >= routes.size()) break;
-                    if (y >= ry && y < ry + SUB_H) {
-                        int rbx = right - 44, dbx = right - 20;
-                        if (x >= rbx && x < rbx + 18 && patchCreatorModule != null) patchCreatorModule.executeRoute(routes.get(idx));
-                        else if (x >= dbx && x < dbx + 16) cfg.deleteRoute(routes.get(idx));
-                        return true;
-                    }
-                    ry += SUB_H;
-                }
-            }
-        }
-
-        ry += 4 + 18;
         if (hitModRow(x, y, cx, ry, cw)) { toggleOrExpand(x, cx, cw, "inventoryhud", () -> cfg.setInventoryHudEnabled(!cfg.isInventoryHudEnabled())); return true; }
         ry += ROW_H;
         if (ex("inventoryhud")) {
@@ -948,11 +1027,118 @@ public class n0nameScreen extends Screen {
         return true;
     }
 
+    // --- Macros clicks ---
+    private boolean clickMacros(int cx, int cy, int cw, int x, int y, ModConfig cfg) {
+        int ry = cy + PAD + 18;
+
+        // Record / Stop
+        if (hitSub(x, y, cx, ry, cw)) {
+            if (macroManagerModule != null) {
+                if (macroManagerModule.isRecording()) {
+                    macroManagerModule.stopRecording();
+                } else {
+                    String name = macroNameInput.isEmpty() ? "macro" + System.currentTimeMillis() : macroNameInput;
+                    macroManagerModule.startRecording(name, MacroType.CUSTOM);
+                }
+            }
+            return true;
+        }
+        ry += SUB_H + 2;
+
+        // Play / Stop
+        if (hitSub(x, y, cx, ry, cw)) {
+            if (macroManagerModule != null) {
+                if (macroManagerModule.isExecuting()) {
+                    macroManagerModule.stopExecution();
+                } else if (macroManagerModule.getSelectedMacroName() != null) {
+                    macroManagerModule.playMacro(macroManagerModule.getSelectedMacroName());
+                }
+            }
+            return true;
+        }
+        ry += SUB_H + 2;
+
+        // Create Macro
+        if (hitSub(x, y, cx, ry, cw)) {
+            if (macroManagerModule != null && !macroNameInput.isEmpty()) {
+                macroManagerModule.createMacro(macroNameInput, MacroType.CUSTOM);
+            }
+            return true;
+        }
+        ry += SUB_H + 2;
+
+        // Macro name input
+        int inputLeft = cx + PAD + 12, inputRight = cx + cw - PAD;
+        if (x >= inputLeft && x < inputRight && y >= ry && y < ry + SUB_H) {
+            macroNameFocused = true;
+            pathfinderCoordsFocused = false;
+            return true;
+        }
+        macroNameFocused = false;
+        ry += SUB_H + 2;
+
+        // Open Macros Folder
+        if (hitSub(x, y, cx, ry, cw)) {
+            if (macroManagerModule != null) macroManagerModule.openMacrosFolder();
+            return true;
+        }
+        ry += SUB_H + 2;
+
+        // Skip status info rows
+        if (macroManagerModule != null) {
+            if (macroManagerModule.isRecording()) ry += SUB_H;
+            if (macroManagerModule.isExecuting()) ry += SUB_H;
+        }
+
+        ry += 4 + 18; // section title gap
+
+        // Macro list clicks
+        if (macroManagerModule != null) {
+            java.util.List<Macro> macros = macroManagerModule.getAllMacros();
+            int right = cx + cw - PAD;
+            for (Macro macro : macros) {
+                if (y >= ry && y < ry + ROW_H + 4) {
+                    // Play button
+                    int pbx = right - 92;
+                    if (x >= pbx && x < pbx + 18) {
+                        macroManagerModule.playMacro(macro.getName());
+                        return true;
+                    }
+                    // Repeat toggle
+                    int rbx = right - 70;
+                    if (x >= rbx && x < rbx + 18) {
+                        macroManagerModule.toggleRepeat(macro.getName());
+                        return true;
+                    }
+                    // Delete button
+                    int dbx = right - 48;
+                    if (x >= dbx && x < dbx + 18) {
+                        macroManagerModule.deleteMacro(macro.getName());
+                        return true;
+                    }
+                    // Eye toggle button
+                    int ebx = right - 26;
+                    if (x >= ebx && x < ebx + 18) {
+                        macroManagerModule.toggleRenderVisible(macro.getName());
+                        return true;
+                    }
+                    // Select macro
+                    macroManagerModule.setSelectedMacroName(macro.getName());
+                    return true;
+                }
+                ry += ROW_H + 6;
+            }
+        }
+        return true;
+    }
+
     // --- Misc clicks ---
     private boolean clickMisc(int cx, int cy, int cw, int x, int y, ModConfig cfg) {
         int ry = cy + PAD + 18;
 
         if (hitModRow(x, y, cx, ry, cw)) { cfg.setAntiAfkEnabled(!cfg.isAntiAfkEnabled()); return true; }
+        ry += ROW_H;
+        if (hitModRow(x, y, cx, ry, cw)) { cfg.setFreeCamEnabled(!cfg.isFreeCamEnabled()); return true; }
         ry += ROW_H;
         if (hitSub(x, y, cx, ry, cw)) { cycleAimProfile(cfg, dir(x, cx, cw)); return true; }
         ry += SUB_H + 4 + 18;
@@ -967,7 +1153,9 @@ public class n0nameScreen extends Screen {
         }
 
         if (hitModRow(x, y, cx, ry, cw)) { cfg.setDebugEnabled(!cfg.isDebugEnabled()); return true; }
-        ry += ROW_H + 4 + 18;
+        ry += ROW_H;
+        if (hitSub(x, y, cx, ry, cw)) { cfg.setPathfindingDebugEnabled(!cfg.isPathfindingDebugEnabled()); return true; }
+        ry += SUB_H + 4 + 18;
 
         if (hitSub(x, y, cx, ry, cw)) { if (pathfinderDebugModule != null) pathfinderDebugModule.setStartFromPlayer(); return true; } ry += SUB_H + 2;
         if (hitSub(x, y, cx, ry, cw)) { if (pathfinderDebugModule != null) pathfinderDebugModule.setStopFromPlayer(); return true; } ry += SUB_H + 2;
@@ -1099,6 +1287,18 @@ public class n0nameScreen extends Screen {
                 return true;
             }
         }
+        if (macroNameFocused) {
+            if (key.key() == GLFW.GLFW_KEY_BACKSPACE && !macroNameInput.isEmpty()) {
+                macroNameInput = macroNameInput.substring(0, macroNameInput.length() - 1);
+                return true;
+            }
+            if (key.key() == GLFW.GLFW_KEY_ENTER || key.key() == GLFW.GLFW_KEY_KP_ENTER) {
+                macroNameFocused = false;
+                return true;
+            }
+            char c = k2c(key.key());
+            if (c != 0 && macroNameInput.length() < 24) { macroNameInput += c; return true; }
+        }
         if (ex("patchcreator")) {
             if (key.key() == GLFW.GLFW_KEY_BACKSPACE && !routeNameInput.isEmpty()) {
                 routeNameInput = routeNameInput.substring(0, routeNameInput.length() - 1); return true;
@@ -1117,6 +1317,7 @@ public class n0nameScreen extends Screen {
         aSet("automine", cfg.isAutoMineEnabled());
         aSet("autoslay", cfg.isAutoSlayEnabled());
         aSet("afk",      cfg.isAntiAfkEnabled());
+        aSet("freecam",  cfg.isFreeCamEnabled());
         aSet("nuker",    cfg.isBlockNukerEnabled());
         aSet("autofish", cfg.isAutoFishEnabled());
         aSet("fairy",    cfg.isFairySoulFinderEnabled());

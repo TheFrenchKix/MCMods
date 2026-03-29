@@ -14,10 +14,10 @@ import java.util.List;
 public class PathRenderer {
 
     // Colors
-    private static final float[] LINE_COLOR   = {0.2f, 0.8f, 1.0f, 0.9f};   // Cyan
-    private static final float[] NODE_COLOR   = {0.3f, 0.6f, 1.0f, 0.7f};   // Blue
-    private static final float[] CURRENT_COLOR = {1.0f, 1.0f, 0.2f, 0.9f};  // Yellow
-    private static final float[] TARGET_COLOR = {1.0f, 0.3f, 0.3f, 0.9f};   // Red
+    private static final float[] LINE_COLOR   = {1.0f, 0.3f, 0.35f, 0.85f};  // Red-coral path line
+    private static final float[] NODE_COLOR   = {1.0f, 0.35f, 0.4f, 0.55f};  // Soft red nodes
+    private static final float[] CURRENT_COLOR = {1.0f, 0.85f, 0.2f, 0.9f};  // Gold current
+    private static final float[] TARGET_COLOR = {0.2f, 1.0f, 0.3f, 0.9f};    // Green target
 
     public static void renderPath(WorldRenderContext context, List<PathNode> nodes, int currentIndex) {
         renderPath(context, nodes, currentIndex, LINE_COLOR, NODE_COLOR, CURRENT_COLOR, TARGET_COLOR);
@@ -37,8 +37,9 @@ public class PathRenderer {
 
         matrices.push();
 
-        // Draw line strip connecting all nodes
-        List<Vec3d> points = new ArrayList<>(nodes.size() + 1);
+        // Only render remaining path nodes (skip already-visited)
+        int renderStart = Math.max(0, currentIndex);
+        List<Vec3d> points = new ArrayList<>(nodes.size() - renderStart + 1);
 
         // Add player position as first point
         MinecraftClient client = MinecraftClient.getInstance();
@@ -50,19 +51,18 @@ public class PathRenderer {
             points.add(new Vec3d(px, py + 0.1, pz));
         }
 
-        for (PathNode node : nodes) {
+        for (int i = renderStart; i < nodes.size(); i++) {
+            PathNode node = nodes.get(i);
             points.add(new Vec3d(node.x() + 0.5, node.y() + 0.1, node.z() + 0.5));
         }
 
-        RenderUtils.drawLineStrip(matrices, consumer, points,
+        // Catmull-Rom spline interpolation for smooth curves
+        List<Vec3d> smoothPoints = catmullRomSpline(points, 8);
+        RenderUtils.drawLineStrip(matrices, consumer, smoothPoints,
             lineColor[0], lineColor[1], lineColor[2], lineColor[3], cam);
 
-        // Draw boxes on each node
-        double boxSize = 0.4;
-        double boxHeight = 0.2;
-        double boxOffset = (1.0 - boxSize) / 2.0;
-
-        for (int i = 0; i < nodes.size(); i++) {
+        // Draw full-block outlines on each node
+        for (int i = renderStart; i < nodes.size(); i++) {
             PathNode node = nodes.get(i);
             float[] color;
             if (i == currentIndex) {
@@ -73,9 +73,10 @@ public class PathRenderer {
                 color = nodeColor;
             }
 
+            // Draw full block outline at the node's block position
             RenderUtils.drawWireframeBox(matrices, consumer,
-                node.x() + boxOffset, node.y() + 0.01, node.z() + boxOffset,
-                boxSize, boxHeight, boxSize,
+                node.x(), node.y(), node.z(),
+                1.0, 1.0, 1.0,
                 color[0], color[1], color[2], color[3], cam);
         }
 
@@ -119,5 +120,42 @@ public class PathRenderer {
 
         matrices.pop();
         RenderUtils.flushLines(consumers);
+    }
+
+    /**
+     * Catmull-Rom spline interpolation for smooth path curves.
+     * Falls back to original points if fewer than 3 control points.
+     */
+    private static List<Vec3d> catmullRomSpline(List<Vec3d> points, int subdivisions) {
+        if (points.size() < 3) return points;
+
+        List<Vec3d> result = new ArrayList<>();
+        for (int i = 0; i < points.size() - 1; i++) {
+            Vec3d p0 = points.get(Math.max(i - 1, 0));
+            Vec3d p1 = points.get(i);
+            Vec3d p2 = points.get(Math.min(i + 1, points.size() - 1));
+            Vec3d p3 = points.get(Math.min(i + 2, points.size() - 1));
+
+            for (int j = 0; j < subdivisions; j++) {
+                float t = (float) j / subdivisions;
+                float t2 = t * t;
+                float t3 = t2 * t;
+
+                double x = 0.5 * ((2 * p1.x) + (-p0.x + p2.x) * t
+                        + (2 * p0.x - 5 * p1.x + 4 * p2.x - p3.x) * t2
+                        + (-p0.x + 3 * p1.x - 3 * p2.x + p3.x) * t3);
+                double y = 0.5 * ((2 * p1.y) + (-p0.y + p2.y) * t
+                        + (2 * p0.y - 5 * p1.y + 4 * p2.y - p3.y) * t2
+                        + (-p0.y + 3 * p1.y - 3 * p2.y + p3.y) * t3);
+                double z = 0.5 * ((2 * p1.z) + (-p0.z + p2.z) * t
+                        + (2 * p0.z - 5 * p1.z + 4 * p2.z - p3.z) * t2
+                        + (-p0.z + 3 * p1.z - 3 * p2.z + p3.z) * t3);
+
+                result.add(new Vec3d(x, y, z));
+            }
+        }
+        // Add the last point
+        result.add(points.get(points.size() - 1));
+        return result;
     }
 }

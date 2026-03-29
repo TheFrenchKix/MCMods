@@ -4,8 +4,8 @@ import com.mwa.n0name.DebugLogger;
 import com.mwa.n0name.ModConfig;
 import com.mwa.n0name.movement.AimController;
 import com.mwa.n0name.movement.MovementController;
-import com.mwa.n0name.pathfinding.AStarPathfinder;
 import com.mwa.n0name.pathfinding.PathNode;
+import com.mwa.n0name.pathfinding.PathfindingService;
 import com.mwa.n0name.pathfinding.WalkabilityChecker;
 import com.mwa.n0name.render.N0nameRenderLayers;
 import com.mwa.n0name.render.RenderUtils;
@@ -55,6 +55,7 @@ public class AutoSlayModule {
     private int repathCooldown = 0;
     private int outOfRangeCooldown = 0;
     private static final int SCAN_INTERVAL = 5;
+    private static final int SCAN_INTERVAL_ATTACKING = 3;  // Faster rescan while in combat
     private static final int REPATH_INTERVAL = 40;
     private static final int OUT_OF_RANGE_COOLDOWN_TICKS = 10;
     private static final int PATH_RETRY_COOLDOWN_TICKS = 8;
@@ -73,6 +74,10 @@ public class AutoSlayModule {
     private int pathRetryCooldown = 0;
     private int attackNotVisibleTicks = 0;
     private static final int MAX_NOT_VISIBLE_ATTACK_TICKS = 6;
+
+    // Entities that could not be pathed to: blocked for a cooldown before re-trying.
+    private final java.util.Map<Integer, Integer> unreachableCooldowns = new java.util.HashMap<>();
+    private static final int UNREACHABLE_COOLDOWN_TICKS = 200; // 10s
 
     public void frameUpdate() {
         if (aimController.isActive()) {
@@ -108,8 +113,12 @@ public class AutoSlayModule {
             pathRetryCooldown--;
         }
 
+        // Tick down unreachable cooldowns
+        unreachableCooldowns.entrySet().removeIf(e -> e.getValue() <= 0);
+        unreachableCooldowns.replaceAll((id, cd) -> cd - 1);
+
         if (--scanCooldown <= 0) {
-            scanCooldown = SCAN_INTERVAL;
+            scanCooldown = (state == State.ATTACKING) ? SCAN_INTERVAL_ATTACKING : SCAN_INTERVAL;
             findTarget(client, player, config, scanRange);
         }
 
@@ -164,8 +173,11 @@ public class AutoSlayModule {
             if (entity instanceof PlayerEntity) continue;
             if (entity instanceof ItemEntity) continue;
             if (entity instanceof ExperienceOrbEntity) continue;
-            if (!(entity instanceof LivingEntity)) continue;
+            if (!(entity instanceof LivingEntity living)) continue;
             if (!entity.isAlive()) continue;
+            if (living.isInvisible()) continue;                    // skip invisible
+            if (entity.hasNoGravity()) continue;                   // skip flying/levitating
+            if (unreachableCooldowns.containsKey(entity.getId())) continue; // skip known unreachable
             if (!entity.getBoundingBox().intersects(searchBox)) continue;
 
             String entityId = net.minecraft.registry.Registries.ENTITY_TYPE.getId(entity.getType()).toString();
@@ -195,7 +207,15 @@ public class AutoSlayModule {
         if (currentTarget != null && currentTarget.isAlive() && currentTarget != selected) {
             double currentDist = player.squaredDistanceTo(currentTarget);
             double switchMarginSq = config.getAutoFarmSwitchMargin() * config.getAutoFarmSwitchMargin();
-            if (selected == null || selectedDistSq + switchMarginSq >= currentDist) {
+            // Only switch if new target is >20% better by score to prevent ping-pong
+            double currentScore = scoreTarget(config.getAutoFarmPriority(), currentTarget, player, currentDist);
+            boolean significantlyBetter;
+            if (config.getAutoFarmPriority() == ModConfig.AutoFarmPriority.HIGHEST_THREAT) {
+                significantlyBetter = selected != null && selectedScore > currentScore * 1.2;
+            } else {
+                significantlyBetter = selected != null && selectedScore < currentScore * 0.8;
+            }
+            if (!significantlyBetter || (selected != null && selectedDistSq + switchMarginSq >= currentDist)) {
                 selected = currentTarget;
             }
         }
@@ -261,13 +281,7 @@ public class AutoSlayModule {
         }
 
         state = State.PATHFINDING;
-        List<PathNode> path = findPathWithFallback(client, playerPos, targetPos, "target");
-        String pathKind = "direct";
-
-        if (path.isEmpty() || path.size() < 2) {
-            path = findStepByStepPath(client, playerPos, targetPos);
-            pathKind = "step";
-        }
+        List<PathNode> path = PathfindingService.findPath(client.world, playerPos, targetPos);
 
         if (path.isEmpty() || path.size() < 2) {
             onPathFailed(player, "No path found to target");
@@ -280,7 +294,7 @@ public class AutoSlayModule {
         state = State.WALKING;
         repathCooldown = REPATH_INTERVAL;
         DebugLogger.log("AutoSlay", "Path to " + currentTarget.getDisplayName().getString()
-            + " (" + path.size() + " nodes, mode=" + pathKind + ")");
+            + " (" + path.size() + " nodes)");
     }
 
     private void handleWalking(MinecraftClient client, ClientPlayerEntity player, double dist, double attackRange) {
@@ -445,6 +459,10 @@ public class AutoSlayModule {
 
         if (consecutivePathFailures >= MAX_PATH_FAILURES_BEFORE_SWITCH) {
             DebugLogger.log("AutoSlay", "Switching target after repeated path failures");
+            if (currentTarget != null) {
+                unreachableCooldowns.put(currentTarget.getId(), UNREACHABLE_COOLDOWN_TICKS);
+                DebugLogger.log("AutoSlay", "Marked entity " + currentTarget.getId() + " as unreachable for " + UNREACHABLE_COOLDOWN_TICKS + " ticks");
+            }
             currentTarget = null;
             consecutivePathFailures = 0;
             scanCooldown = 0;
@@ -494,71 +512,6 @@ public class AutoSlayModule {
         }
 
         return null;
-    }
-
-    private List<PathNode> findPathWithFallback(MinecraftClient client, BlockPos from, BlockPos to, String label) {
-        if (client.world == null) return Collections.emptyList();
-
-        List<PathNode> direct = AStarPathfinder.findPath(client.world, from, to, false);
-        if (!direct.isEmpty()) {
-            return direct;
-        }
-
-        List<BlockPos> candidates = collectWalkableCandidates(client, to, 4);
-        for (BlockPos candidate : candidates) {
-            List<PathNode> alt = AStarPathfinder.findPath(client.world, from, candidate, false);
-            if (!alt.isEmpty()) {
-                DebugLogger.log("AutoSlay", "Fallback " + label + " path via " + candidate.toShortString());
-                return alt;
-            }
-        }
-
-        return Collections.emptyList();
-    }
-
-    private List<PathNode> findStepByStepPath(MinecraftClient client, BlockPos from, BlockPos target) {
-        if (client.world == null) return Collections.emptyList();
-
-        Vec3d delta = new Vec3d(target.getX() - from.getX(), target.getY() - from.getY(), target.getZ() - from.getZ());
-        double dist = delta.length();
-        if (dist < 1.0e-4) {
-            return Collections.emptyList();
-        }
-
-        Vec3d dir = delta.normalize();
-        int maxStep = Math.min(MAX_STEP_SUBGOAL_DISTANCE, (int) Math.floor(dist));
-
-        for (int step = maxStep; step >= MIN_STEP_SUBGOAL_DISTANCE; step -= 2) {
-            BlockPos projected = BlockPos.ofFloored(
-                from.getX() + dir.x * step,
-                from.getY() + dir.y * step,
-                from.getZ() + dir.z * step
-            );
-
-            BlockPos stepTarget = sanitizeWalkableAnchor(client, projected, "step");
-            if (stepTarget == null) {
-                continue;
-            }
-
-            List<PathNode> stepPath = findPathWithFallback(client, from, stepTarget, "step");
-            if (!stepPath.isEmpty() && stepPath.size() >= 2) {
-                DebugLogger.log("AutoSlay", "Step-by-step recovery using subgoal " + stepTarget.toShortString()
-                    + " dist=" + String.format(Locale.ROOT, "%.1f", Math.sqrt(stepTarget.getSquaredDistance(target))));
-                return stepPath;
-            }
-        }
-
-        // Last attempt: try nearby walkable candidates around the target sorted by distance to target.
-        List<BlockPos> candidates = collectWalkableCandidates(client, target, 8);
-        for (BlockPos candidate : candidates) {
-            List<PathNode> alt = AStarPathfinder.findPath(client.world, from, candidate, false);
-            if (!alt.isEmpty() && alt.size() >= 2) {
-                DebugLogger.log("AutoSlay", "Step-by-step fallback via nearby " + candidate.toShortString());
-                return alt;
-            }
-        }
-
-        return Collections.emptyList();
     }
 
     private BlockPos findNearestWalkable(MinecraftClient client, BlockPos around, int radius) {

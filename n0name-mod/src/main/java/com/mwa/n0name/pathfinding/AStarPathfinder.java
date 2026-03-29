@@ -26,7 +26,7 @@ public class AStarPathfinder {
     // --- Search limits ---
     private static final int MAX_ITERATIONS  = 8000;
     private static final int MAX_PATH_LENGTH = 200;
-    private static final int MAX_SEARCH_RADIUS = 96;
+    private static final int MAX_SEARCH_RADIUS = 50;
     private static final long DEFAULT_TIMEOUT_MS = 80; // ~4 game ticks at 20 TPS
 
     // --- Goal tolerance ---
@@ -43,6 +43,9 @@ public class AStarPathfinder {
     private static final double COST_STEP_DOWN_DIAGONAL  = 1.7;  // ~13.3/7.9
     private static final double COST_DROP_BASE       = 1.5;      // base drop cost
     private static final double COST_DROP_PER_BLOCK  = 0.8;      // add per extra block height
+    private static final double COST_STAIR_UP_STRAIGHT = 1.1;    // stairs: smooth ascent, almost flat cost
+    private static final double COST_STAIR_UP_DIAGONAL = 1.5;    // stairs diagonal
+    private static final double COST_PARKOUR_JUMP = 3.5;         // sprint jump across 1-block gap
 
     // --- Search tuning (from Stevebot + mineflayer-pathfinder) ---
     private static final double H_COST_WEIGHT = 1.3;     // weighted A*: greedier but faster
@@ -55,6 +58,32 @@ public class AStarPathfinder {
         {1, 0}, {-1, 0}, {0, 1}, {0, -1},       // cardinal
         {1, 1}, {1, -1}, {-1, 1}, {-1, -1}       // diagonal
     };
+
+    // --- Path cache (frequently-used paths, TTL-based) ---
+    private static final int PATH_CACHE_SIZE = 32;
+    private static final long PATH_CACHE_TTL_MS = 3000; // 3 seconds
+
+    @SuppressWarnings("serial")
+    private static final java.util.LinkedHashMap<Long, CachedPath> pathCache =
+        new java.util.LinkedHashMap<>(16, 0.75f, true) {
+            @Override protected boolean removeEldestEntry(java.util.Map.Entry<Long, CachedPath> eldest) {
+                return size() > PATH_CACHE_SIZE;
+            }
+        };
+
+    private record CachedPath(List<PathNode> path, long timestamp) {
+        boolean isValid() { return System.currentTimeMillis() - timestamp < PATH_CACHE_TTL_MS; }
+    }
+
+    private static long cacheKey(BlockPos start, BlockPos goal) {
+        long h = 17;
+        h = h * 31 + start.getX(); h = h * 31 + start.getY(); h = h * 31 + start.getZ();
+        h = h * 31 + goal.getX();  h = h * 31 + goal.getY();  h = h * 31 + goal.getZ();
+        return h;
+    }
+
+    /** Clear the path cache (call when world changes significantly). */
+    public static void clearPathCache() { pathCache.clear(); }
 
     // --- Node representation ---
     private static class Node implements Comparable<Node> {
@@ -157,6 +186,19 @@ public class AStarPathfinder {
             return Collections.emptyList();
         }
 
+        // --- Path cache check ---
+        long cacheKeyVal = cacheKey(start, goal);
+        CachedPath cached = pathCache.get(cacheKeyVal);
+        if (cached != null) {
+            if (cached.isValid()) {
+                trace("Cache hit");
+                if (logResult) DebugLogger.log(LOG_MODULE, "Cache hit");
+                return new ArrayList<>(cached.path);
+            } else {
+                pathCache.remove(cacheKeyVal);
+            }
+        }
+
         // Node cache: one Node per BlockPos (like Stevebot's NodeCache)
         Map<BlockPos, Node> nodeCache = new HashMap<>();
         PriorityQueue<Node> openSet = new PriorityQueue<>();
@@ -241,6 +283,7 @@ public class AStarPathfinder {
             if (logResult) {
                 DebugLogger.log(LOG_MODULE, "Path found: " + finalPath.size() + " nodes in " + iterations + " iters");
             }
+            pathCache.put(cacheKeyVal, new CachedPath(List.copyOf(finalPath), System.currentTimeMillis()));
             return finalPath;
         }
 
@@ -287,10 +330,14 @@ public class AStarPathfinder {
                 continue;
             }
 
-            // Try step up (+1)
+            // Try step up (+1) — reduced cost for stairs (smooth ascent)
             BlockPos up = current.pos.add(dir[0], 1, dir[1]);
             if (WalkabilityChecker.canTraverse(world, current.pos, up)) {
-                double cost = diagonal ? COST_STEP_UP_DIAGONAL : COST_STEP_UP_STRAIGHT;
+                BlockPos stepBlock = current.pos.add(dir[0], 0, dir[1]);
+                boolean stairStep = WalkabilityChecker.isStairLike(world, stepBlock);
+                double cost = stairStep
+                    ? (diagonal ? COST_STAIR_UP_DIAGONAL : COST_STAIR_UP_STRAIGHT)
+                    : (diagonal ? COST_STEP_UP_DIAGONAL : COST_STEP_UP_STRAIGHT);
                 tryAddNeighbor(current, up, cost, goal, nodeCache, openSet, maxSearchCost);
                 continue;
             }
@@ -303,6 +350,22 @@ public class AStarPathfinder {
                         + (drop > 1 ? COST_DROP_BASE + COST_DROP_PER_BLOCK * (drop - 1) : 0);
                     tryAddNeighbor(current, down, cost, goal, nodeCache, openSet, maxSearchCost);
                     break;
+                }
+            }
+
+            // Parkour: sprint jump across 1-block gap (cardinal directions only)
+            if (!diagonal) {
+                BlockPos oneAway = current.pos.add(dir[0], 0, dir[1]);
+                if (!WalkabilityChecker.isWalkable(world, oneAway)
+                    && WalkabilityChecker.isPassable(world, current.pos.up(2))) {
+                    for (int jumpDy = 1; jumpDy >= -1; jumpDy--) {
+                        BlockPos landing = current.pos.add(dir[0] * 2, jumpDy, dir[1] * 2);
+                        if (WalkabilityChecker.isWalkable(world, landing)) {
+                            double cost = COST_PARKOUR_JUMP + Math.max(0, jumpDy) * 1.2;
+                            tryAddNeighbor(current, landing, cost, goal, nodeCache, openSet, maxSearchCost);
+                            break;
+                        }
+                    }
                 }
             }
         }

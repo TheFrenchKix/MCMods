@@ -24,6 +24,7 @@ import java.util.Random;
 
 /**
  * AutoCrop module: scans for ripe crops, breaks them, optionally replants.
+ * Supports standard (nearest) mode and row farming mode.
  * Separated from mob combat (AutoSlay).
  */
 public class AutoCropModule {
@@ -34,6 +35,16 @@ public class AutoCropModule {
     private int cropBreakFailures = 0;
     private int jitterCooldown = 0;
     private final Random random = new Random();
+
+    // Row farming state
+    private enum RowState { IDLE, DETECTING, WALKING_TO_ROW, FARMING_ROW }
+    private RowState rowState = RowState.IDLE;
+    private List<BlockPos> currentRow = new java.util.ArrayList<>();
+    private int currentRowIndex = 0;
+    private Direction rowDirection = null;   // auto-detected or manual
+    private BlockPos rowOrigin = null;       // where the current row starts
+    private int rowsCompleted = 0;
+    private int rowDetectCooldown = 0;
 
     public void frameUpdate() {
         if (aimController.isActive()) {
@@ -72,6 +83,12 @@ public class AutoCropModule {
             float jitter = (random.nextFloat() - 0.5f) * 1.2f;
             aimController.applyYawJitter(jitter);
             jitterCooldown = 8 + random.nextInt(8);
+        }
+
+        // Row farming mode: systematic row-by-row harvesting
+        if (config.isRowFarmingEnabled()) {
+            tickRowFarming(client, player, config);
+            return;
         }
 
         double cropRange = Math.min(8.0, config.getAutoFarmRange());
@@ -127,6 +144,164 @@ public class AutoCropModule {
             cropPauseTicks = 10;
             DebugLogger.log("AutoCrop", "Desync watchdog: lowering crop speed");
         }
+    }
+
+    /**
+     * Row farming: detect crop rows, walk along each row harvesting, step to next row.
+     */
+    private void tickRowFarming(MinecraftClient client, ClientPlayerEntity player, ModConfig config) {
+        double cropRange = Math.min(8.0, config.getAutoFarmRange());
+
+        switch (rowState) {
+            case IDLE -> {
+                if (--rowDetectCooldown <= 0) {
+                    rowDetectCooldown = 10;
+                    // Auto-detect row direction from nearby crops
+                    rowDirection = detectRowDirection(player, cropRange, config.getCropType());
+                    if (rowDirection != null) {
+                        currentRow = findCropRow(player, rowDirection, cropRange, config.getCropType());
+                        if (currentRow.size() >= 3) {
+                            rowState = RowState.FARMING_ROW;
+                            currentRowIndex = 0;
+                            rowOrigin = currentRow.get(0);
+                            DebugLogger.log("AutoCrop", "Row detected: " + currentRow.size()
+                                + " crops, dir=" + rowDirection.asString());
+                        }
+                    }
+                }
+            }
+            case FARMING_ROW -> {
+                if (currentRowIndex >= currentRow.size()) {
+                    // Row complete, find next parallel row
+                    rowsCompleted++;
+                    rowState = RowState.IDLE;
+                    rowDetectCooldown = 5;
+                    DebugLogger.log("AutoCrop", "Row complete (" + rowsCompleted + " total)");
+                    return;
+                }
+
+                BlockPos target = currentRow.get(currentRowIndex);
+                double dist = player.squaredDistanceTo(Vec3d.ofCenter(target));
+
+                // If we're close enough, harvest
+                if (dist < 4.0) {
+                    BlockState cropState = client.world.getBlockState(target);
+                    if (isMatchingRipeCrop(cropState, config.getCropType())) {
+                        if (config.isAutoFarmAutoTool()) {
+                            equipBestFarmingTool(player, config.getCropType());
+                        }
+                        boolean didBreak = breakCrop(client, player, target);
+                        if (didBreak) {
+                            if (cropState.isOf(Blocks.WHEAT)) FarmStats.addWheatBreaks(1);
+                            else if (cropState.isOf(Blocks.CARROTS)) FarmStats.addCarrotBreaks(1);
+                            else if (cropState.isOf(Blocks.POTATOES)) FarmStats.addPotatoBreaks(1);
+                            if (config.isAutoFarmReplant()) {
+                                tryReplant(client, player, target, cropState);
+                            }
+                        }
+                    }
+                    currentRowIndex++;
+                } else {
+                    // Walk toward next crop in row
+                    Vec3d targetVec = Vec3d.ofCenter(target);
+                    aimController.setTarget(targetVec);
+                    aimController.setFastTracking(false);
+
+                    // Simple forward movement toward target
+                    double dx = targetVec.x - player.getX();
+                    double dz = targetVec.z - player.getZ();
+                    float targetYaw = (float) (Math.toDegrees(Math.atan2(-dx, dz)));
+                    player.setYaw(targetYaw);
+                    client.options.forwardKey.setPressed(true);
+
+                    // If stuck, advance to next crop
+                    if (dist > 2.0 && player.getVelocity().horizontalLengthSquared() < 0.001) {
+                        cropBreakFailures++;
+                        if (cropBreakFailures > 20) {
+                            currentRowIndex++;
+                            cropBreakFailures = 0;
+                        }
+                    } else {
+                        cropBreakFailures = 0;
+                    }
+                }
+            }
+            default -> rowState = RowState.IDLE;
+        }
+    }
+
+    /**
+     * Auto-detect row direction by finding the longest aligned crop sequence near the player.
+     */
+    private Direction detectRowDirection(ClientPlayerEntity player, double range, ModConfig.CropType cropType) {
+        MinecraftClient client = MinecraftClient.getInstance();
+        if (client.world == null) return null;
+
+        BlockPos center = player.getBlockPos();
+        int r = Math.max(1, (int) Math.ceil(range));
+
+        Direction bestDir = null;
+        int bestLength = 0;
+
+        // Check N/S and E/W directions
+        for (Direction dir : new Direction[]{Direction.NORTH, Direction.SOUTH, Direction.EAST, Direction.WEST}) {
+            // Scan from player position in this direction
+            int length = 0;
+            for (int i = 0; i <= r * 2; i++) {
+                BlockPos check = center.offset(dir, i);
+                // Check at player Y and Y-1 (in case crops are slightly below)
+                boolean found = false;
+                for (int dy = -1; dy <= 1; dy++) {
+                    BlockPos checkY = check.up(dy);
+                    if (isMatchingRipeCrop(client.world.getBlockState(checkY), cropType)) {
+                        found = true;
+                        break;
+                    }
+                }
+                if (found) length++;
+                else if (length > 0) break; // end of contiguous row
+            }
+            if (length > bestLength) {
+                bestLength = length;
+                bestDir = dir;
+            }
+        }
+
+        return bestLength >= 3 ? bestDir : null;
+    }
+
+    /**
+     * Find all ripe crops in a line from the player in the given direction.
+     */
+    private List<BlockPos> findCropRow(ClientPlayerEntity player, Direction dir, double range, ModConfig.CropType cropType) {
+        MinecraftClient client = MinecraftClient.getInstance();
+        if (client.world == null) return Collections.emptyList();
+
+        BlockPos center = player.getBlockPos();
+        int r = Math.max(1, (int) Math.ceil(range));
+        List<BlockPos> row = new java.util.ArrayList<>();
+
+        // Scan forward along the direction
+        for (int i = -r; i <= r; i++) {
+            BlockPos check = center.offset(dir, i);
+            for (int dy = -1; dy <= 1; dy++) {
+                BlockPos checkY = check.up(dy);
+                if (isMatchingRipeCrop(client.world.getBlockState(checkY), cropType)) {
+                    row.add(checkY);
+                    break;
+                }
+            }
+        }
+
+        // Sort by distance along the direction so we walk in order
+        Vec3d playerPos = new Vec3d(player.getX(), player.getY(), player.getZ());
+        row.sort((a, b) -> {
+            double da = Vec3d.ofCenter(a).squaredDistanceTo(playerPos);
+            double db = Vec3d.ofCenter(b).squaredDistanceTo(playerPos);
+            return Double.compare(da, db);
+        });
+
+        return row;
     }
 
     private List<BlockPos> findRipeCropTargets(ClientPlayerEntity player, double range, ModConfig.CropType cropType) {

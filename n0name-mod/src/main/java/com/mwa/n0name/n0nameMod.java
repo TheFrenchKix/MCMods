@@ -1,6 +1,9 @@
 package com.mwa.n0name;
 
+import com.mwa.n0name.gui.MacroManagerScreen;
+import com.mwa.n0name.gui.RecordingOverlay;
 import com.mwa.n0name.gui.n0nameScreen;
+import com.mwa.n0name.macro.MacroManagerModule;
 import com.mwa.n0name.modules.AntiAfkModule;
 import com.mwa.n0name.modules.AutoCropModule;
 import com.mwa.n0name.modules.AutoFarmModule;
@@ -11,6 +14,7 @@ import com.mwa.n0name.modules.BlockNukerModule;
 import com.mwa.n0name.modules.CommandMacroModule;
 import com.mwa.n0name.modules.DebugToolsModule;
 import com.mwa.n0name.modules.FairySoulFinderModule;
+import com.mwa.n0name.modules.FreeCamModule;
 import com.mwa.n0name.modules.HypixelStatsHudModule;
 import com.mwa.n0name.modules.InventoryHudModule;
 import com.mwa.n0name.modules.PatchCreatorModule;
@@ -22,6 +26,7 @@ import com.mwa.n0name.modules.TimeLoggerModule;
 import com.mwa.n0name.modules.WaypointManagerModule;
 import com.mwa.n0name.render.BlockESP;
 import com.mwa.n0name.render.EntityESP;
+import com.mwa.n0name.render.PathfindingDebugRenderer;
 import net.fabricmc.api.ClientModInitializer;
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
 import net.fabricmc.fabric.api.client.keybinding.v1.KeyBindingHelper;
@@ -49,13 +54,19 @@ public class n0nameMod implements ClientModInitializer {
     private final SkyblockAutomationModule skyblockAutomationModule = new SkyblockAutomationModule(commandMacroModule);
     private final AutoFishModule autoFishModule = new AutoFishModule();
     private final FairySoulFinderModule fairySoulFinderModule = new FairySoulFinderModule();
+    private final FreeCamModule freeCamModule = new FreeCamModule();
     private final PlayerEspModule playerEspModule = new PlayerEspModule();
     private final DebugToolsModule debugToolsModule = new DebugToolsModule();
     private final PathfinderDebugModule pathfinderDebugModule = new PathfinderDebugModule();
     private final RouteHeatmapModule routeHeatmapModule = new RouteHeatmapModule();
     private final InventoryHudModule inventoryHudModule = new InventoryHudModule();
     private final HypixelStatsHudModule hypixelStatsHudModule = new HypixelStatsHudModule(timeLoggerModule);
+    private final MacroManagerModule macroManagerModule = new MacroManagerModule();
     private KeyBinding menuKey;
+    private KeyBinding macroMenuKey;
+    private KeyBinding pathDebugRenderKey;
+    private boolean wasAttacking = false;
+    private boolean wasUsing = false;
 
     @Override
     public void onInitializeClient() {
@@ -65,6 +76,10 @@ public class n0nameMod implements ClientModInitializer {
         // Pass module references to GUI
         n0nameScreen.setModuleReferences(patchCreatorModule, waypointManagerModule, timeLoggerModule,
             routeHeatmapModule, blockESP, entityESP, pathfinderDebugModule);
+        n0nameScreen.setMacroModule(macroManagerModule);
+
+        // Pass macro module to recording overlay
+        RecordingOverlay.setMacroModule(macroManagerModule);
 
         // Single keybind: open ClickGUI with Right Shift.
         menuKey = KeyBindingHelper.registerKeyBinding(new KeyBinding(
@@ -74,12 +89,39 @@ public class n0nameMod implements ClientModInitializer {
             KeyBinding.Category.MISC
         ));
 
+        // Keybind: open Macro Manager with M key.
+        macroMenuKey = KeyBindingHelper.registerKeyBinding(new KeyBinding(
+            "key.n0name.macros",
+            InputUtil.Type.KEYSYM,
+            GLFW.GLFW_KEY_M,
+            KeyBinding.Category.MISC
+        ));
+
+        // Keybind: toggle pathfinding scanned-block renderer.
+        pathDebugRenderKey = KeyBindingHelper.registerKeyBinding(new KeyBinding(
+            "key.n0name.path_debug_render",
+            InputUtil.Type.KEYSYM,
+            GLFW.GLFW_KEY_F8,
+            KeyBinding.Category.MISC
+        ));
+
         // Tick all modules
         ClientTickEvents.END_CLIENT_TICK.register(client -> {
             while (menuKey.wasPressed()) {
                 if (client.currentScreen == null) {
                     client.setScreen(new n0nameScreen());
                 }
+            }
+            while (macroMenuKey.wasPressed()) {
+                if (client.currentScreen == null) {
+                    client.setScreen(new MacroManagerScreen(macroManagerModule));
+                }
+            }
+            while (pathDebugRenderKey.wasPressed()) {
+                ModConfig cfg = ModConfig.getInstance();
+                cfg.setPathfindingDebugEnabled(!cfg.isPathfindingDebugEnabled());
+                DebugLogger.log("PathDebug", "Scanned-block rendering: "
+                    + (cfg.isPathfindingDebugEnabled() ? "ON" : "OFF"));
             }
 
             antiAfkModule.tick();
@@ -91,6 +133,7 @@ public class n0nameMod implements ClientModInitializer {
             blockNukerModule.tick();
             autoFishModule.tick();
             fairySoulFinderModule.tick();
+            freeCamModule.tick();
             playerEspModule.tick();
             waypointManagerModule.tick();
             timeLoggerModule.tick();
@@ -99,6 +142,16 @@ public class n0nameMod implements ClientModInitializer {
             pathfinderDebugModule.tick();
             routeHeatmapModule.tick();
             hypixelStatsHudModule.tick();
+            macroManagerModule.tick();
+                        // Detect rising edge of attack/use keys for macro step recording
+                        if (client.options != null) {
+                            boolean attacking = client.options.attackKey.isPressed();
+                            boolean using = client.options.useKey.isPressed();
+                            if (attacking && !wasAttacking) macroManagerModule.onLeftClick();
+                            if (using && !wasUsing) macroManagerModule.onRightClick();
+                            wasAttacking = attacking;
+                            wasUsing = using;
+                        }
             entityESP.tick();
             blockESP.tick();
         });
@@ -114,6 +167,7 @@ public class n0nameMod implements ClientModInitializer {
             autoSlayModule.frameUpdate();
             autoCropModule.frameUpdate();
             pathfinderDebugModule.frameUpdate();
+            macroManagerModule.frameUpdate();
 
             blockESP.render(context);
             entityESP.render(context);
@@ -126,6 +180,8 @@ public class n0nameMod implements ClientModInitializer {
             fairySoulFinderModule.render(context);
             playerEspModule.render(context);
             pathfinderDebugModule.render(context);
+            macroManagerModule.render(context);
+            PathfindingDebugRenderer.render(context);  // Pathfinding debug visualization
         });
 
         HudRenderCallback.EVENT.register((drawContext, tickCounter) -> {
@@ -133,6 +189,8 @@ public class n0nameMod implements ClientModInitializer {
             routeHeatmapModule.renderHud(drawContext);
             hypixelStatsHudModule.renderHud(drawContext);
             pathfinderDebugModule.renderHud(drawContext);
+            macroManagerModule.renderHud(drawContext);
+            RecordingOverlay.render(drawContext, 0f);
         });
 
         DebugLogger.info("Ready");

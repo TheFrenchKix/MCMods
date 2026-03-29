@@ -4,8 +4,8 @@ import com.mwa.n0name.DebugLogger;
 import com.mwa.n0name.ModConfig;
 import com.mwa.n0name.movement.AimController;
 import com.mwa.n0name.movement.MovementController;
-import com.mwa.n0name.pathfinding.AStarPathfinder;
 import com.mwa.n0name.pathfinding.PathNode;
+import com.mwa.n0name.pathfinding.PathfindingService;
 import com.mwa.n0name.pathfinding.WalkabilityChecker;
 import com.mwa.n0name.render.N0nameRenderLayers;
 import com.mwa.n0name.render.RenderUtils;
@@ -470,7 +470,7 @@ public class AutoFarmModule {
         }
 
         state = State.PATHFINDING;
-        List<PathNode> path = AStarPathfinder.findPath(client.world, playerPos, targetPos);
+        List<PathNode> path = PathfindingService.findPath(client.world, playerPos, targetPos);
 
         if (path.isEmpty() || path.size() < 2) {
             DebugLogger.log("AutoFarm", "No path found to target");

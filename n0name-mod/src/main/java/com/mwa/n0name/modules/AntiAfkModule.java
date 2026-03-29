@@ -3,8 +3,8 @@ package com.mwa.n0name.modules;
 import com.mwa.n0name.DebugLogger;
 import com.mwa.n0name.ModConfig;
 import com.mwa.n0name.movement.MovementController;
-import com.mwa.n0name.pathfinding.AStarPathfinder;
 import com.mwa.n0name.pathfinding.PathNode;
+import com.mwa.n0name.pathfinding.PathfindingService;
 import com.mwa.n0name.render.PathRenderer;
 import net.fabricmc.fabric.api.client.rendering.v1.world.WorldRenderContext;
 import net.minecraft.client.MinecraftClient;
@@ -76,7 +76,7 @@ public class AntiAfkModule {
         BlockPos playerPos = player.getBlockPos();
         int radius = 5 + random.nextInt(11); // 5-15 blocks
 
-        BlockPos target = AStarPathfinder.findRandomWalkableTarget(
+        BlockPos target = PathfindingService.findRandomWalkableTarget(
             client.world, playerPos, radius, random);
 
         if (target == null) {
@@ -85,7 +85,7 @@ public class AntiAfkModule {
             return;
         }
 
-        List<PathNode> path = AStarPathfinder.findPath(client.world, playerPos, target);
+        List<PathNode> path = PathfindingService.findPath(client.world, playerPos, target);
         if (path.isEmpty() || path.size() < 2) {
             startPause(20 + random.nextInt(20));
             return;

@@ -58,8 +58,10 @@ public class ModConfig {
     private boolean fairySoulFinderEnabled = false;
     private boolean playerEspEnabled = false;
     private boolean friendListEnabled = false;
+    private boolean freeCamEnabled = false;
     private boolean debugToolsEnabled = false;
     private boolean debugEnabled     = false;
+    private boolean pathfindingDebugEnabled = false;  // Visualize walkable/non-walkable blocks
 
     // --- AutoFarm settings ---
     private boolean cpsMode    = false; // false=cooldown, true=CPS
@@ -79,6 +81,7 @@ public class ModConfig {
     private boolean autoFarmAutoTool = true;
     private int autoFarmCropBlocksPerTick = 2;
     private boolean autoFarmReplant = true;
+    private boolean rowFarmingEnabled = false;  // Row farming mode: systematic row-by-row harvesting
     private JacobPreset jacobPreset = JacobPreset.BALANCED;
     private AimProfile aimProfile = AimProfile.BALANCED;
 
@@ -251,6 +254,8 @@ public class ModConfig {
     public void setPlayerEspEnabled(boolean v) { playerEspEnabled = v; }
     public boolean isFriendListEnabled() { return friendListEnabled; }
     public void setFriendListEnabled(boolean v) { friendListEnabled = v; }
+    public boolean isFreeCamEnabled() { return freeCamEnabled; }
+    public void setFreeCamEnabled(boolean v) { freeCamEnabled = v; }
     public boolean isDebugToolsEnabled() { return debugToolsEnabled; }
     public void setDebugToolsEnabled(boolean v) { debugToolsEnabled = v; }
     public boolean isDebugEnabled()      { return debugEnabled; }
@@ -258,6 +263,8 @@ public class ModConfig {
         debugEnabled = v;
         DebugLogger.setEnabled(v);
     }
+    public boolean isPathfindingDebugEnabled() { return pathfindingDebugEnabled; }
+    public void setPathfindingDebugEnabled(boolean v) { pathfindingDebugEnabled = v; }
 
     public boolean isCpsMode()           { return cpsMode; }
     public void setCpsMode(boolean v)    { cpsMode = v; }
@@ -295,6 +302,8 @@ public class ModConfig {
     public void setAutoFarmCropBlocksPerTick(int v) { autoFarmCropBlocksPerTick = Math.max(1, Math.min(6, v)); }
     public boolean isAutoFarmReplant() { return autoFarmReplant; }
     public void setAutoFarmReplant(boolean v) { autoFarmReplant = v; }
+    public boolean isRowFarmingEnabled() { return rowFarmingEnabled; }
+    public void setRowFarmingEnabled(boolean v) { rowFarmingEnabled = v; }
     public JacobPreset getJacobPreset() { return jacobPreset; }
     public void setJacobPreset(JacobPreset v) {
         jacobPreset = (v == null) ? JacobPreset.BALANCED : v;

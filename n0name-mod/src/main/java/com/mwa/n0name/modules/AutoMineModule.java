@@ -4,8 +4,8 @@ import com.mwa.n0name.DebugLogger;
 import com.mwa.n0name.ModConfig;
 import com.mwa.n0name.movement.AimController;
 import com.mwa.n0name.movement.MovementController;
-import com.mwa.n0name.pathfinding.AStarPathfinder;
 import com.mwa.n0name.pathfinding.PathNode;
+import com.mwa.n0name.pathfinding.PathfindingService;
 import com.mwa.n0name.pathfinding.WalkabilityChecker;
 import com.mwa.n0name.render.N0nameRenderLayers;
 import com.mwa.n0name.render.RenderUtils;
@@ -192,9 +192,18 @@ public class AutoMineModule {
         List<PathNode> bestPath = Collections.emptyList();
 
         for (BlockPos candidate : candidates) {
-            List<PathNode> path = AStarPathfinder.findPath(client.world, playerPos, candidate);
+            List<BlockPos> grid = PathfindingService.scanWalkableGrid(client.world, playerPos, candidate, 4, 3);
+            List<BlockPos> blockPath = PathfindingService.findBlockPath(client.world, grid, playerPos, candidate);
+            if (!blockPath.isEmpty() && blockPath.size() >= 2) {
+                bestPath = PathfindingService.toPathNodes(blockPath);
+                movementController.startBlockPath(blockPath, grid);
+                break;
+            }
+
+            List<PathNode> path = PathfindingService.findPath(client.world, playerPos, candidate);
             if (!path.isEmpty() && path.size() >= 2) {
                 bestPath = path;
+                movementController.startPath(bestPath);
                 break;
             }
         }
@@ -206,7 +215,6 @@ public class AutoMineModule {
         }
 
         currentPath = bestPath;
-        movementController.startPath(bestPath);
         state = State.WALKING;
         repathCooldown = REPATH_INTERVAL;
     }

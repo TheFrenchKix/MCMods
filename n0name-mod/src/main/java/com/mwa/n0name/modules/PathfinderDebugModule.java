@@ -2,8 +2,9 @@ package com.mwa.n0name.modules;
 
 import com.mwa.n0name.DebugLogger;
 import com.mwa.n0name.movement.MovementController;
-import com.mwa.n0name.pathfinding.AStarPathfinder;
+import com.mwa.n0name.pathfinding.BlockPosPathfinder;
 import com.mwa.n0name.pathfinding.PathNode;
+import com.mwa.n0name.pathfinding.PathfindingService;
 import com.mwa.n0name.pathfinding.WalkabilityChecker;
 import com.mwa.n0name.render.N0nameRenderLayers;
 import com.mwa.n0name.render.PathRenderer;
@@ -97,6 +98,23 @@ public class PathfinderDebugModule {
             return;
         }
         coordsGoal = saneGoal;
+
+        // Build a local walkable grid and run BlockPos A* (simple 3D grid pathfinder).
+        List<BlockPos> grid = scanWalkableGrid(client, from, coordsGoal, 6, 4);
+        List<BlockPos> blockPath = BlockPosPathfinder.findPath(client.world, grid, from, coordsGoal);
+        if (!blockPath.isEmpty() && blockPath.size() >= 2) {
+            List<PathNode> pathNodes = PathfindingService.toPathNodes(blockPath);
+            logPath("coords-grid", pathNodes, from, coordsGoal);
+            lastPathToStop = pathNodes;
+            lastPathToStart = Collections.emptyList();
+            currentPath = pathNodes;
+            movementController.startBlockPath(blockPath, grid);
+            state = State.GOING_TO_STOP;
+            logTickCooldown = 0;
+            return;
+        }
+
+        DebugLogger.info("PathfinderDebug: grid path failed, fallback to global A*");
         List<PathNode> path = findPathWithFallback(client, from, coordsGoal, "coords");
         logPath("coords", path, from, coordsGoal);
         if (path.isEmpty() || path.size() < 2) {
@@ -394,7 +412,7 @@ public class PathfinderDebugModule {
         if (client.world == null) return Collections.emptyList();
         boolean verboseTrace = verbosity == Verbosity.FULL;
 
-        List<PathNode> direct = AStarPathfinder.findPath(client.world, from, to, false, verboseTrace);
+        List<PathNode> direct = PathfindingService.findPath(client.world, from, to, verboseTrace);
         if (!direct.isEmpty()) {
             return direct;
         }
@@ -406,7 +424,7 @@ public class PathfinderDebugModule {
         DebugLogger.info("[PathfinderDebug] Direct path " + label + " failed, trying nearby walkable fallbacks");
         List<BlockPos> candidates = collectWalkableCandidates(client, to, 4);
         for (BlockPos candidate : candidates) {
-            List<PathNode> alt = AStarPathfinder.findPath(client.world, from, candidate, false, verboseTrace);
+            List<PathNode> alt = PathfindingService.findPath(client.world, from, candidate, verboseTrace);
             if (!alt.isEmpty()) {
                 DebugLogger.info("[PathfinderDebug] Fallback path " + label + " succeeded via " + candidate.toShortString());
                 return alt;
@@ -440,6 +458,31 @@ public class PathfinderDebugModule {
 
         out.sort(Comparator.comparingDouble(pos -> pos.getSquaredDistance(around)));
         return out;
+    }
+
+    private List<BlockPos> scanWalkableGrid(MinecraftClient client, BlockPos from, BlockPos to, int padding, int verticalRange) {
+        if (client.world == null) return Collections.emptyList();
+
+        int minX = Math.min(from.getX(), to.getX()) - padding;
+        int maxX = Math.max(from.getX(), to.getX()) + padding;
+        int minY = Math.min(from.getY(), to.getY()) - verticalRange;
+        int maxY = Math.max(from.getY(), to.getY()) + verticalRange;
+        int minZ = Math.min(from.getZ(), to.getZ()) - padding;
+        int maxZ = Math.max(from.getZ(), to.getZ()) + padding;
+
+        List<BlockPos> walkable = new ArrayList<>();
+        for (int x = minX; x <= maxX; x++) {
+            for (int y = minY; y <= maxY; y++) {
+                for (int z = minZ; z <= maxZ; z++) {
+                    BlockPos pos = new BlockPos(x, y, z);
+                    if (WalkabilityChecker.isWalkable(client.world, pos)) {
+                        walkable.add(pos.toImmutable());
+                    }
+                }
+            }
+        }
+
+        return walkable;
     }
 
     private void renderMarkers(WorldRenderContext context) {

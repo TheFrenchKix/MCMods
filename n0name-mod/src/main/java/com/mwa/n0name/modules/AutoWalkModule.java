@@ -3,8 +3,8 @@ package com.mwa.n0name.modules;
 import com.mwa.n0name.DebugLogger;
 import com.mwa.n0name.ModConfig;
 import com.mwa.n0name.movement.MovementController;
-import com.mwa.n0name.pathfinding.AStarPathfinder;
 import com.mwa.n0name.pathfinding.PathNode;
+import com.mwa.n0name.pathfinding.PathfindingService;
 import com.mwa.n0name.render.PathRenderer;
 import net.fabricmc.fabric.api.client.rendering.v1.world.WorldRenderContext;
 import net.minecraft.client.MinecraftClient;
@@ -60,8 +60,18 @@ public class AutoWalkModule {
         MinecraftClient client = MinecraftClient.getInstance();
         if (client.player == null || client.world == null || targetPos == null) return;
 
-        List<PathNode> path = AStarPathfinder.findPath(
-            client.world, client.player.getBlockPos(), targetPos);
+        BlockPos from = client.player.getBlockPos();
+        List<BlockPos> grid = PathfindingService.scanWalkableGrid(client.world, from, targetPos, 6, 4);
+        List<BlockPos> blockPath = PathfindingService.findBlockPath(client.world, grid, from, targetPos);
+        if (!blockPath.isEmpty() && blockPath.size() >= 2) {
+            currentPath = PathfindingService.toPathNodes(blockPath);
+            movementController.startBlockPath(blockPath, grid);
+            DebugLogger.log("AutoWalk", "Block path to " + targetPos + ": " + blockPath.size() + " nodes");
+            return;
+        }
+
+        List<PathNode> path = PathfindingService.findPath(
+            client.world, from, targetPos);
 
         if (path.isEmpty()) {
             DebugLogger.log("AutoWalk", "No path found to " + targetPos);

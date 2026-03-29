@@ -6,8 +6,8 @@ import com.google.gson.JsonParser;
 import com.mwa.n0name.DebugLogger;
 import com.mwa.n0name.ModConfig;
 import com.mwa.n0name.movement.MovementController;
-import com.mwa.n0name.pathfinding.AStarPathfinder;
 import com.mwa.n0name.pathfinding.PathNode;
+import com.mwa.n0name.pathfinding.PathfindingService;
 import net.fabricmc.loader.api.FabricLoader;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.network.ClientPlayerEntity;
@@ -87,7 +87,7 @@ public class WaypointManagerModule {
             return;
         }
 
-        List<PathNode> path = AStarPathfinder.findPath(client.world, player.getBlockPos(), target);
+        List<PathNode> path = PathfindingService.findPath(client.world, player.getBlockPos(), target);
         if (path.isEmpty() || path.size() < 2) {
             player.sendMessage(Text.literal("[n0name] No path to WP" + slot), true);
             return;
