@@ -1,0 +1,12 @@
+{
+  "required": true,
+  "package": "lfmdevelopment.lfmclient.mixin.baritone",
+  "compatibilityLevel": "JAVA_21",
+  "plugin": "lfmdevelopment.lfmclient.MixinPlugin",
+  "client": [
+    "ComeCommandMixin"
+  ],
+  "injectors": {
+    "defaultRequire": 1
+  }
+}

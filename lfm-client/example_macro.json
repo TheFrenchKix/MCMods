@@ -1,0 +1,53 @@
+{
+  "name": "example_mining_route",
+  "version": 1,
+  "loop": true,
+  "attack": true,
+  "actions": [
+    {
+      "type": "MOVE",
+      "mode": "WALK",
+      "position": { "x": 100, "y": 64, "z": 200 },
+      "usePathfinder": true,
+      "tolerance": 0.3,
+      "retries": 3,
+      "delay": 5
+    },
+    {
+      "type": "MINE",
+      "position": { "x": 101, "y": 63, "z": 200 },
+      "block": "minecraft:stone",
+      "delay": 3
+    },
+    {
+      "type": "MINE",
+      "position": { "x": 101, "y": 63, "z": 201 },
+      "block": "minecraft:stone",
+      "delay": 2
+    },
+    {
+      "type": "MOVE",
+      "mode": "WALK",
+      "position": { "x": 105, "y": 64, "z": 205 },
+      "usePathfinder": true,
+      "tolerance": 0.3,
+      "retries": 3,
+      "delay": 5
+    },
+    {
+      "type": "INTERACT",
+      "position": { "x": 106, "y": 64, "z": 205 },
+      "block": "minecraft:chest",
+      "delay": 2
+    },
+    {
+      "type": "MOVE",
+      "mode": "WALK",
+      "position": { "x": 100, "y": 64, "z": 200 },
+      "usePathfinder": true,
+      "tolerance": 0.3,
+      "retries": 3,
+      "delay": 10
+    }
+  ]
+}

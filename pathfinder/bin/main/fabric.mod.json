@@ -1,0 +1,22 @@
+{
+  "schemaVersion": 1,
+  "id": "pathfinder",
+  "version": "${version}",
+  "name": "Pathfinder",
+  "description": "Fresh Fabric pathfinder mod using the Baritone API.",
+  "authors": ["MWA"],
+  "license": "MIT",
+  "environment": "client",
+  "entrypoints": {
+    "client": ["com.mwa.pathfinder.PathfinderMod"]
+  },
+  "depends": {
+    "fabricloader": ">=0.18.0",
+    "fabric-api": "*",
+    "minecraft": "~1.21.8",
+    "java": ">=21"
+  },
+  "suggests": {
+    "baritone": "*"
+  }
+}

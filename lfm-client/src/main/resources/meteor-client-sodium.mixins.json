@@ -1,0 +1,19 @@
+{
+  "required": false,
+  "package": "lfmdevelopment.lfmclient.mixin.sodium",
+  "compatibilityLevel": "JAVA_21",
+  "plugin": "lfmdevelopment.lfmclient.MixinPlugin",
+  "client": [
+    "MeshVertexConsumerMixin",
+    "SodiumFluidRendererImplDefaultRenderContextMixin",
+    "SodiumInnerPartitionBSPNodeMixin",
+    "SodiumLightDataAccessMixin",
+    "SodiumWorldRendererMixin"
+  ],
+  "injectors": {
+    "defaultRequire": 1
+  },
+  "mixinextras": {
+    "minVersion": "0.5.0"
+  }
+}

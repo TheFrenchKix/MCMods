@@ -1,0 +1,12 @@
+{
+  "required": false,
+  "package": "lfmdevelopment.lfmclient.mixin.indigo",
+  "compatibilityLevel": "JAVA_21",
+  "plugin": "lfmdevelopment.lfmclient.MixinPlugin",
+  "client": [
+  
+  ],
+  "injectors": {
+    "defaultRequire": 1
+  }
+}
