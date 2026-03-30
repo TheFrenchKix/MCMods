@@ -1,0 +1,28 @@
+{
+  "schemaVersion": 1,
+  "id": "macromod",
+  "version": "${version}",
+  "name": "Macro Mod",
+  "description": "Enregistrez, sauvegardez et exécutez des macros de minage automatique.",
+  "authors": [
+    "MacroModDev"
+  ],
+  "contact": {},
+  "license": "MIT",
+  "icon": "assets/macromod/icon.png",
+  "environment": "client",
+  "entrypoints": {
+    "client": [
+      "com.example.macromod.MacroModClient"
+    ]
+  },
+  "mixins": [
+    "macromod.mixins.json"
+  ],
+  "depends": {
+    "fabricloader": ">=0.15.0",
+    "fabric-api": ">=0.100.0",
+    "minecraft": "~1.21",
+    "java": ">=21"
+  }
+}

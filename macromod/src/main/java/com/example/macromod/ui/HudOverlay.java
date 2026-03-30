@@ -1,0 +1,192 @@
+package com.example.macromod.ui;
+
+import com.example.macromod.MacroModClient;
+import com.example.macromod.manager.MacroExecutor;
+import com.example.macromod.model.Macro;
+import com.example.macromod.model.MacroState;
+import com.example.macromod.model.MacroStep;
+import com.example.macromod.recording.MacroRecorder;
+import com.example.macromod.recording.RecordingState;
+import net.fabricmc.api.EnvType;
+import net.fabricmc.api.Environment;
+import net.minecraft.client.MinecraftClient;
+import net.minecraft.client.font.TextRenderer;
+import net.minecraft.client.gui.DrawContext;
+import net.minecraft.client.render.RenderTickCounter;
+import net.minecraft.text.Text;
+import net.minecraft.util.Formatting;
+
+/**
+ * Renders HUD overlay showing macro execution and recording status.
+ * Displayed in the top-left corner when a macro is active or recording.
+ */
+@Environment(EnvType.CLIENT)
+public class HudOverlay {
+
+    private static final int PADDING = 4;
+    private static final int LINE_HEIGHT = 11;
+    private static final int BG_COLOR = 0x80000000; // semi-transparent black
+    private static final int BAR_BG_COLOR = 0xFF333333;
+    private static final int BAR_FG_COLOR = 0xFF00CC00;
+    private static final int BAR_WIDTH = 120;
+    private static final int BAR_HEIGHT = 6;
+
+    /**
+     * Called by HudRenderCallback each frame.
+     */
+    public void render(DrawContext context, RenderTickCounter tickCounter) {
+        MinecraftClient client = MinecraftClient.getInstance();
+        if (client.player == null) return;
+        if (!MacroModClient.getConfigManager().getConfig().isHudVisible()) return;
+
+        MacroExecutor executor = MacroModClient.getExecutor();
+        MacroRecorder recorder = MacroModClient.getRecorder();
+
+        boolean executorActive = executor.isRunning() || executor.getState() == MacroState.PAUSED;
+        boolean recorderActive = recorder.getState() != RecordingState.IDLE;
+
+        if (!executorActive && !recorderActive) return;
+
+        TextRenderer textRenderer = client.textRenderer;
+        int x = PADDING + 2;
+        int y = PADDING + 2;
+
+        if (recorderActive) {
+            renderRecordingHud(context, textRenderer, recorder, x, y);
+        } else if (executorActive) {
+            renderExecutionHud(context, textRenderer, executor, x, y);
+        }
+    }
+
+    private void renderRecordingHud(DrawContext context, TextRenderer textRenderer, MacroRecorder recorder, int x, int y) {
+        Macro macro = recorder.getCurrentMacro();
+        if (macro == null) return;
+
+        int width = BAR_WIDTH + PADDING * 4;
+        int height = LINE_HEIGHT * 5 + PADDING * 2;
+        context.fill(x - PADDING, y - PADDING, x + width, y + height, BG_COLOR);
+
+        // State
+        String stateStr = recorder.getState() == RecordingState.RECORDING ? "⏺ Recording" : "⏸ Paused";
+        context.drawTextWithShadow(textRenderer,
+                Text.literal(stateStr).formatted(Formatting.RED),
+                x, y, 0xFFFFFF);
+        y += LINE_HEIGHT;
+
+        // Macro name
+        context.drawTextWithShadow(textRenderer,
+                Text.translatable("macromod.hud.recording", macro.getName()),
+                x, y, 0xFFFF00);
+        y += LINE_HEIGHT;
+
+        // Step count
+        context.drawTextWithShadow(textRenderer,
+                Text.translatable("macromod.hud.recording_steps", macro.getSteps().size()),
+                x, y, 0xFFFFFF);
+        y += LINE_HEIGHT;
+
+        // Blocks in current step
+        MacroStep currentStep = recorder.getCurrentStep();
+        int blockCount = currentStep != null ? currentStep.getTargets().size() : 0;
+        context.drawTextWithShadow(textRenderer,
+                Text.translatable("macromod.hud.recording_blocks", blockCount),
+                x, y, 0xFFFFFF);
+        y += LINE_HEIGHT;
+
+        // Last added
+        String lastAdded = recorder.getLastAddedInfo();
+        if (!lastAdded.isEmpty()) {
+            context.drawTextWithShadow(textRenderer,
+                    Text.translatable("macromod.hud.last_added", lastAdded),
+                    x, y, 0xAAAAAA);
+        }
+    }
+
+    private void renderExecutionHud(DrawContext context, TextRenderer textRenderer, MacroExecutor executor, int x, int y) {
+        Macro macro = executor.getCurrentMacro();
+        if (macro == null) return;
+
+        int width = BAR_WIDTH + PADDING * 4;
+        int height = LINE_HEIGHT * 5 + BAR_HEIGHT + PADDING * 3;
+        context.fill(x - PADDING, y - PADDING, x + width, y + height, BG_COLOR);
+
+        // Macro name
+        context.drawTextWithShadow(textRenderer,
+                Text.translatable("macromod.hud.macro", macro.getName()),
+                x, y, 0x55FF55);
+        y += LINE_HEIGHT;
+
+        // State
+        String stateStr = getStateDisplay(executor.getState());
+        int stateColor = getStateColor(executor.getState());
+        context.drawTextWithShadow(textRenderer,
+                Text.translatable("macromod.hud.state", stateStr),
+                x, y, stateColor);
+        y += LINE_HEIGHT;
+
+        // Step progress
+        context.drawTextWithShadow(textRenderer,
+                Text.translatable("macromod.hud.step",
+                        executor.getCurrentStepIndex() + 1,
+                        executor.getTotalSteps()),
+                x, y, 0xFFFFFF);
+        y += LINE_HEIGHT;
+
+        // Block progress in current step
+        context.drawTextWithShadow(textRenderer,
+                Text.translatable("macromod.hud.blocks",
+                        executor.getBlocksProcessedInStep(),
+                        executor.getTotalBlocksInStep()),
+                x, y, 0xFFFFFF);
+        y += LINE_HEIGHT;
+
+        // Waypoint coordinates
+        int stepIdx = executor.getCurrentStepIndex();
+        if (stepIdx < macro.getSteps().size()) {
+            MacroStep step = macro.getSteps().get(stepIdx);
+            context.drawTextWithShadow(textRenderer,
+                    Text.translatable("macromod.hud.waypoint",
+                            step.getDestination().getX(),
+                            step.getDestination().getY(),
+                            step.getDestination().getZ()),
+                    x, y, 0xCCCCCC);
+            y += LINE_HEIGHT;
+        }
+
+        // Progress bar
+        y += 2;
+        float progress = executor.getTotalSteps() > 0
+                ? (float) executor.getCurrentStepIndex() / executor.getTotalSteps()
+                : 0;
+        int filledWidth = (int) (BAR_WIDTH * progress);
+        context.fill(x, y, x + BAR_WIDTH, y + BAR_HEIGHT, BAR_BG_COLOR);
+        if (filledWidth > 0) {
+            context.fill(x, y, x + filledWidth, y + BAR_HEIGHT, BAR_FG_COLOR);
+        }
+    }
+
+    private String getStateDisplay(MacroState state) {
+        return switch (state) {
+            case IDLE -> "Idle";
+            case PATHFINDING -> "Pathfinding...";
+            case MOVING -> "Moving...";
+            case MINING -> "Mining...";
+            case NEXT_STEP -> "Next step...";
+            case PAUSED -> "⏸ Paused";
+            case COMPLETED -> "✅ Completed";
+            case ERROR -> "❌ Error";
+        };
+    }
+
+    private int getStateColor(MacroState state) {
+        return switch (state) {
+            case IDLE -> 0xAAAAAA;
+            case PATHFINDING, MOVING -> 0x55FFFF;
+            case MINING -> 0xFFAA00;
+            case NEXT_STEP -> 0x55FF55;
+            case PAUSED -> 0xFFFF55;
+            case COMPLETED -> 0x55FF55;
+            case ERROR -> 0xFF5555;
+        };
+    }
+}
