@@ -2,7 +2,6 @@ package com.example.macromod.util;
 
 import com.example.macromod.model.BlockTarget;
 import com.example.macromod.model.Macro;
-import com.example.macromod.model.MacroConfig;
 import com.example.macromod.model.MacroStep;
 import com.google.gson.*;
 import net.fabricmc.api.EnvType;

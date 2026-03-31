@@ -4,10 +4,14 @@ import com.example.macromod.command.MacroCommands;
 import com.example.macromod.config.ConfigManager;
 import com.example.macromod.manager.MacroExecutor;
 import com.example.macromod.manager.MacroManager;
+import com.example.macromod.pathfinding.PathHandler;
+import com.example.macromod.pathfinding.SmoothAim;
+import com.example.macromod.pathfinding.StevebotPathRuntime;
 import com.example.macromod.recording.MacroRecorder;
 import com.example.macromod.recording.RecordingState;
 import com.example.macromod.ui.HudOverlay;
 import com.example.macromod.ui.MacroScreen;
+import com.example.macromod.ui.PathDebugRenderer;
 import net.fabricmc.api.ClientModInitializer;
 import net.fabricmc.api.EnvType;
 import net.fabricmc.api.Environment;
@@ -15,6 +19,7 @@ import net.fabricmc.fabric.api.client.command.v2.ClientCommandRegistrationCallba
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
 import net.fabricmc.fabric.api.client.keybinding.v1.KeyBindingHelper;
 import net.fabricmc.fabric.api.client.rendering.v1.HudRenderCallback;
+import net.fabricmc.fabric.api.client.rendering.v1.WorldRenderEvents;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.option.KeyBinding;
 import net.minecraft.client.util.InputUtil;
@@ -24,6 +29,7 @@ import org.slf4j.LoggerFactory;
 
 /**
  * Client-side mod initializer. Registers keybindings, events, commands, and HUD.
+ * Integrates Stevebot for pathfinding and bot control.
  */
 @Environment(EnvType.CLIENT)
 public class MacroModClient implements ClientModInitializer {
@@ -36,6 +42,9 @@ public class MacroModClient implements ClientModInitializer {
     private static MacroRecorder macroRecorder;
     private static ConfigManager configManager;
     private static HudOverlay hudOverlay;
+    private static PathHandler pathHandler;
+    private static StevebotApi stevebotApi;
+    private static SmoothAim smoothAim;
 
     // ─── Keybindings ────────────────────────────────────────────
     private static KeyBinding openGuiKey;
@@ -54,7 +63,9 @@ public class MacroModClient implements ClientModInitializer {
         macroManager = new MacroManager();
         macroManager.loadAll();
 
-        macroExecutor = new MacroExecutor();
+        smoothAim = new SmoothAim();
+
+        macroExecutor = new MacroExecutor(smoothAim);
         macroRecorder = new MacroRecorder();
         hudOverlay = new HudOverlay();
 
@@ -69,6 +80,10 @@ public class MacroModClient implements ClientModInitializer {
 
         // Register HUD
         HudRenderCallback.EVENT.register(hudOverlay::render);
+
+        // Register 3D path debug renderer
+        PathDebugRenderer pathDebugRenderer = new PathDebugRenderer();
+        WorldRenderEvents.AFTER_TRANSLUCENT.register(pathDebugRenderer::onWorldRender);
 
         LOGGER.info("Macro Mod initialized successfully.");
     }
@@ -107,12 +122,36 @@ public class MacroModClient implements ClientModInitializer {
         ClientTickEvents.END_CLIENT_TICK.register(client -> {
             if (client.player == null) return;
 
+            // Initialize Stevebot path runtime lazily once client options/world/player are ready.
+            ensureStevebotInitialized(client);
+
+            // Smooth aim tick (once per client tick — no async)
+            smoothAim.tick(client.player);
+
             // Macro executor tick
             macroExecutor.tick();
 
             // Keybinding checks
             handleKeybindings(client);
         });
+    }
+
+    private void ensureStevebotInitialized(MinecraftClient client) {
+        if (pathHandler != null) {
+            return;
+        }
+        if (client.options == null || client.world == null || client.player == null) {
+            return;
+        }
+
+        try {
+            StevebotPathRuntime.initialize();
+            pathHandler = StevebotPathRuntime.getPathHandler();
+            stevebotApi = new StevebotApi(pathHandler);
+            LOGGER.info("Stevebot path runtime initialized");
+        } catch (Exception e) {
+            LOGGER.error("Failed to initialize Stevebot path runtime", e);
+        }
     }
 
     private void handleKeybindings(MinecraftClient client) {
@@ -152,6 +191,13 @@ public class MacroModClient implements ClientModInitializer {
     // ─── Static accessors ───────────────────────────────────────
 
     /**
+     * Returns the smooth aim singleton.
+     */
+    public static SmoothAim getSmoothAim() {
+        return smoothAim;
+    }
+
+    /**
      * Returns the macro manager singleton.
      */
     public static MacroManager getManager() {
@@ -177,5 +223,31 @@ public class MacroModClient implements ClientModInitializer {
      */
     public static ConfigManager getConfigManager() {
         return configManager;
+    }
+
+    /**
+     * Returns the Stevebot PathHandler singleton.
+     */
+    public static PathHandler getPathHandler() {
+        if (pathHandler == null) {
+            MinecraftClient client = MinecraftClient.getInstance();
+            if (client != null && client.options != null && client.world != null && client.player != null) {
+                try {
+                    StevebotPathRuntime.initialize();
+                    pathHandler = StevebotPathRuntime.getPathHandler();
+                    stevebotApi = new StevebotApi(pathHandler);
+                } catch (Exception e) {
+                    LOGGER.error("Failed to lazily initialize Stevebot path runtime", e);
+                }
+            }
+        }
+        return pathHandler;
+    }
+
+    /**
+     * Returns the Stevebot API singleton.
+     */
+    public static StevebotApi getStevebotApi() {
+        return stevebotApi;
     }
 }

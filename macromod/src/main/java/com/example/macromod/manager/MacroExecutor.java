@@ -1,9 +1,15 @@
 package com.example.macromod.manager;
 
 import com.example.macromod.MacroModClient;
+import com.example.macromod.data.blockpos.BaseBlockPos;
 import com.example.macromod.model.*;
 import com.example.macromod.pathfinding.MovementHelper;
+import com.example.macromod.pathfinding.PathHandler;
 import com.example.macromod.pathfinding.PathFinder;
+import com.example.macromod.pathfinding.SmoothAim;
+
+import java.util.HashSet;
+import com.example.macromod.pathfinding.goal.ExactGoal;
 import com.example.macromod.util.BlockUtils;
 import com.example.macromod.util.PlayerUtils;
 import net.fabricmc.api.EnvType;
@@ -20,6 +26,7 @@ import net.minecraft.util.math.Vec3d;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.util.ArrayList;
 import java.util.List;
 
 /**
@@ -37,9 +44,8 @@ import java.util.List;
 public class MacroExecutor {
 
     private static final Logger LOGGER = LoggerFactory.getLogger("macromod");
-
-    private final PathFinder pathFinder = new PathFinder();
-    private final MovementHelper movementHelper = new MovementHelper();
+    private final MovementHelper movementHelper;
+    private final PathFinder fallbackPathFinder = new PathFinder();
 
     // ─── Execution state ────────────────────────────────────────
     private MacroState state = MacroState.IDLE;
@@ -50,18 +56,25 @@ public class MacroExecutor {
     // ─── Path & movement ────────────────────────────────────────
     private List<BlockPos> currentPath;
     private int currentPathIndex;
-    private int moveTicks;
+    private long moveStartMs;
     private Vec3d lastPosition;
-    private int stuckTicks;
+    private long stuckSince = -1L;
+
+    // ─── Pre-computed paths (all steps computed upfront) ─────────
+    private List<List<BlockPos>> precomputedPaths;
+    private int precomputeIndex;
+    private BlockPos precomputeFromPos;
 
     // ─── Mining ─────────────────────────────────────────────────
     private boolean isMiningBlock;
-    private int miningDelayTicks;
+    private long miningDelayEndMs;
     private long lastMineTime;
 
     // ─── Chunk loading ──────────────────────────────────────────
-    private int chunkWaitTicks;
-
+    private long chunkWaitStartMs = -1L;
+    // ─── Radius scan ───────────────────────────────────────────────
+    /** Set once when entering the MINING state for a step; cleared on step advance. */
+    private boolean radiusScanDone = false;
     // ─── Statistics ─────────────────────────────────────────────
     private int blocksMinedTotal;
     private int blocksSkippedTotal;
@@ -71,6 +84,10 @@ public class MacroExecutor {
 
     // ─── State before pause ─────────────────────────────────────
     private MacroState stateBeforePause;
+
+    public MacroExecutor(SmoothAim smoothAim) {
+        this.movementHelper = new MovementHelper(smoothAim);
+    }
 
     /**
      * Starts execution of a macro by name or ID.
@@ -105,7 +122,7 @@ public class MacroExecutor {
             currentMacro.getConfig().setLoop(loopOverride);
         }
 
-        pathFinder.setMaxNodes(MacroModClient.getConfigManager().getConfig().getMaxPathNodes());
+        fallbackPathFinder.setMaxNodes(MacroModClient.getConfigManager().getConfig().getMaxPathNodes());
 
         // Reset stats
         blocksMinedTotal = 0;
@@ -114,7 +131,16 @@ public class MacroExecutor {
         totalDistance = 0;
         lastDistCheckPos = null;
 
-        state = MacroState.PATHFINDING;
+        // Pre-compute paths for all steps so navigation never stalls between steps
+        precomputedPaths = new ArrayList<>(currentMacro.getSteps().size());
+        for (int i = 0; i < currentMacro.getSteps().size(); i++) {
+            precomputedPaths.add(null);
+        }
+        radiusScanDone = false;
+        MinecraftClient startClient = MinecraftClient.getInstance();
+        precomputeFromPos = startClient.player != null ? startClient.player.getBlockPos() : null;
+        precomputeIndex = 0;
+        state = MacroState.PRECOMPUTING;
         LOGGER.info("Starting macro '{}' (loop={})", macro.getName(), macro.getConfig().isLoop());
 
         if (currentMacro.getConfig().isLoop()) {
@@ -144,6 +170,8 @@ public class MacroExecutor {
         state = MacroState.IDLE;
         currentMacro = null;
         currentPath = null;
+        precomputedPaths = null;
+        precomputeFromPos = null;
         sendMessage("macromod.chat.macro_stopped", Formatting.YELLOW);
         LOGGER.info("Macro stopped");
     }
@@ -200,10 +228,11 @@ public class MacroExecutor {
         }
 
         switch (state) {
-            case PATHFINDING -> tickPathfinding(player, world);
-            case MOVING -> tickMoving(player, world);
-            case MINING -> tickMining(player, world, client);
-            case NEXT_STEP -> tickNextStep();
+            case PRECOMPUTING -> tickPrecomputing(player, world);
+            case PATHFINDING  -> tickPathfinding(player, world);
+            case MOVING       -> tickMoving(player, world);
+            case MINING       -> tickMining(player, world, client);
+            case NEXT_STEP    -> tickNextStep();
             default -> { }
         }
     }
@@ -211,6 +240,52 @@ public class MacroExecutor {
     // ═══════════════════════════════════════════════════════════════
     // State tick handlers
     // ═══════════════════════════════════════════════════════════════
+
+    /**
+     * Pre-computation phase: computes one step path per tick, storing results in
+     * {@code precomputedPaths}. Transitions to PATHFINDING when all paths are ready.
+     */
+    private void tickPrecomputing(ClientPlayerEntity player, ClientWorld world) {
+        if (precomputeIndex >= currentMacro.getSteps().size()) {
+            LOGGER.info("Path pre-computation done ({} steps)", currentMacro.getSteps().size());
+            state = MacroState.PATHFINDING;
+            return;
+        }
+
+        MacroStep step = currentMacro.getSteps().get(precomputeIndex);
+        BlockPos goal  = step.getDestination();
+        BlockPos from  = precomputeFromPos != null ? precomputeFromPos : player.getBlockPos();
+
+        if (!BlockUtils.isChunkLoaded(world, goal)) {
+            // Cannot path to unloaded chunk yet — leave as null, live fallback will handle it
+            LOGGER.debug("Pre-compute skip step {} (chunk not loaded)", precomputeIndex);
+        } else {
+            List<BlockPos> path = null;
+            PathHandler pathHandler = MacroModClient.getPathHandler();
+            if (pathHandler != null) {
+                List<BaseBlockPos> sp = pathHandler.findPath(
+                    new BaseBlockPos(from.getX(), from.getY(), from.getZ()),
+                    new ExactGoal(new BaseBlockPos(goal.getX(), goal.getY(), goal.getZ())),
+                    500L
+                );
+                path = toBlockPosPath(sp);
+            }
+            if (path == null || path.isEmpty()) {
+                path = fallbackPathFinder.findPath(from, goal, world);
+            }
+            precomputedPaths.set(precomputeIndex, path);
+            LOGGER.debug("Pre-computed path for step {}: {} nodes", precomputeIndex,
+                    path != null ? path.size() : 0);
+        }
+
+        precomputeFromPos = goal; // next path starts from this step's destination
+        precomputeIndex++;
+
+        if (precomputeIndex >= currentMacro.getSteps().size()) {
+            LOGGER.info("Path pre-computation done ({} steps)", currentMacro.getSteps().size());
+            state = MacroState.PATHFINDING;
+        }
+    }
 
     private void tickPathfinding(ClientPlayerEntity player, ClientWorld world) {
         MacroStep step = getCurrentStep();
@@ -221,22 +296,6 @@ public class MacroExecutor {
 
         BlockPos goal = step.getDestination();
 
-        // Check if chunk is loaded
-        if (!BlockUtils.isChunkLoaded(world, goal)) {
-            chunkWaitTicks++;
-            if (chunkWaitTicks > 100) {
-                LOGGER.warn("Chunk not loaded after 100 ticks, skipping step");
-                sendMessage("macromod.chat.path_not_found", Formatting.RED);
-                advanceToNextStep();
-                return;
-            }
-            if (chunkWaitTicks == 1) {
-                sendMessage("macromod.chat.chunk_not_loaded", Formatting.YELLOW);
-            }
-            return;
-        }
-        chunkWaitTicks = 0;
-
         // Already at destination?
         if (PlayerUtils.isArrived(player, goal, currentMacro.getConfig().getArrivalRadius())) {
             state = MacroState.MINING;
@@ -245,19 +304,56 @@ public class MacroExecutor {
             return;
         }
 
-        // Find path
-        currentPath = pathFinder.findPath(player.getBlockPos(), goal, world);
-        if (currentPath == null || currentPath.isEmpty()) {
-            LOGGER.warn("No path to step {} destination {}", currentStepIndex, goal);
-            sendMessage("macromod.chat.path_not_found", Formatting.RED);
-            advanceToNextStep();
-            return;
+        // Try to retrieve pre-computed path
+        List<BlockPos> path = (precomputedPaths != null && currentStepIndex < precomputedPaths.size())
+                ? precomputedPaths.get(currentStepIndex) : null;
+
+        if (path == null || path.isEmpty()) {
+            // Live fallback: chunk not loaded during pre-compute, or stuck recalculation
+            if (!BlockUtils.isChunkLoaded(world, goal)) {
+                if (chunkWaitStartMs < 0) {
+                    chunkWaitStartMs = System.currentTimeMillis();
+                    sendMessage("macromod.chat.chunk_not_loaded", Formatting.YELLOW);
+                } else if (System.currentTimeMillis() - chunkWaitStartMs > 5000) {
+                    LOGGER.warn("Chunk not loaded after 5s, skipping step");
+                    sendMessage("macromod.chat.path_not_found", Formatting.RED);
+                    advanceToNextStep();
+                }
+                return;
+            }
+            chunkWaitStartMs = -1L;
+
+            PathHandler pathHandler = MacroModClient.getPathHandler();
+            if (pathHandler != null) {
+                long timeoutMs = Math.max(1000L, currentMacro.getConfig().getMoveTimeout());
+                List<BaseBlockPos> sp = pathHandler.findPath(
+                    new BaseBlockPos(player.getBlockPos().getX(), player.getBlockPos().getY(), player.getBlockPos().getZ()),
+                    new ExactGoal(new BaseBlockPos(goal.getX(), goal.getY(), goal.getZ())),
+                    timeoutMs
+                );
+                path = toBlockPosPath(sp);
+            }
+            if (path == null || path.isEmpty()) {
+                path = fallbackPathFinder.findPath(player.getBlockPos(), goal, world);
+            }
+            if (path == null || path.isEmpty()) {
+                LOGGER.warn("No path to step {} destination {}", currentStepIndex, goal);
+                sendMessage("macromod.chat.path_not_found", Formatting.RED);
+                advanceToNextStep();
+                return;
+            }
+            // Cache for re-use in case we re-enter PATHFINDING
+            if (precomputedPaths != null && currentStepIndex < precomputedPaths.size()) {
+                precomputedPaths.set(currentStepIndex, path);
+            }
         }
 
+        currentPath = path;
         currentPathIndex = 0;
-        moveTicks = 0;
-        stuckTicks = 0;
+        moveStartMs = System.currentTimeMillis();
+        stuckSince = -1L;
         lastPosition = player.getPos();
+        movementHelper.resetJumpState();
         state = MacroState.MOVING;
     }
 
@@ -279,9 +375,8 @@ public class MacroExecutor {
             return;
         }
 
-        // Timeout check
-        moveTicks++;
-        if (moveTicks > currentMacro.getConfig().getMoveTimeout()) {
+        // Timeout check per tick for movement only (not mining) to prevent getting stuck indefinitely
+        if (System.currentTimeMillis() - moveStartMs > 60000) {
             LOGGER.warn("Navigation timeout at step {}", currentStepIndex);
             sendMessage("macromod.chat.timeout", Formatting.RED);
             movementHelper.releaseAllInputs();
@@ -289,46 +384,39 @@ public class MacroExecutor {
             return;
         }
 
-        // Stuck detection (no movement in 60 ticks = 3 seconds)
+        // Stuck detection (no movement in 3 seconds)
         if (lastPosition != null) {
             double moved = PlayerUtils.horizontalDistanceTo(player, lastPosition);
             if (moved < 0.5) {
-                stuckTicks++;
+                if (stuckSince < 0) stuckSince = System.currentTimeMillis();
             } else {
-                stuckTicks = 0;
+                stuckSince = -1L;
                 lastPosition = player.getPos();
             }
         }
 
-        if (stuckTicks > 60) {
+        if (stuckSince >= 0 && System.currentTimeMillis() - stuckSince > 3000) {
             LOGGER.warn("Player stuck, recalculating path");
             sendMessage("macromod.chat.stuck", Formatting.YELLOW);
-            stuckTicks = 0;
+            stuckSince = -1L;
+            // Clear cached path so it's re-computed from the current (actual) position
+            if (precomputedPaths != null && currentStepIndex < precomputedPaths.size()) {
+                precomputedPaths.set(currentStepIndex, null);
+            }
             state = MacroState.PATHFINDING;
             movementHelper.releaseAllInputs();
             return;
         }
 
-        // Anti-fall safety: check if block below is void or dangerous
-        BlockPos belowPlayer = player.getBlockPos().down();
-        if (world.getBlockState(belowPlayer).isAir() || BlockUtils.isDangerous(world, belowPlayer)) {
-            // Check two blocks below too
-            BlockPos twoBelowPlayer = belowPlayer.down();
-            if (world.getBlockState(twoBelowPlayer).isAir()) {
-                LOGGER.warn("Void/danger detected below player, pausing");
-                pause();
-                return;
-            }
-        }
-
-        // Follow path
+        // Follow path — keep forward key held through all waypoints for smooth momentum
         if (currentPath != null && currentPathIndex < currentPath.size()) {
             BlockPos nextWaypoint = currentPath.get(currentPathIndex);
 
-            if (PlayerUtils.isArrived(player, nextWaypoint, 1.0f)) {
+            // Advance to next waypoint when player reaches the center of the current one
+            if (movementHelper.hasReachedWaypoint(player, nextWaypoint)) {
                 currentPathIndex++;
                 if (currentPathIndex >= currentPath.size()) {
-                    // Arrived at end of path
+                    // Reached the end of the path
                     movementHelper.releaseAllInputs();
                     state = MacroState.MINING;
                     currentBlockTargetIndex = 0;
@@ -338,24 +426,58 @@ public class MacroExecutor {
                 nextWaypoint = currentPath.get(currentPathIndex);
             }
 
+            // Look-ahead skip: if the player has overshot the current waypoint and is
+            // already past it toward the next one, advance the index without backtracking.
+            // Uses dot product: if projection of player-position onto curr→next exceeds
+            // the segment length, the player is already beyond the current node.
+            while (currentPathIndex < currentPath.size() - 1) {
+                Vec3d currCenter = net.minecraft.util.math.Vec3d.ofCenter(currentPath.get(currentPathIndex));
+                Vec3d nextCenter = net.minecraft.util.math.Vec3d.ofCenter(currentPath.get(currentPathIndex + 1));
+                Vec3d seg        = nextCenter.subtract(currCenter);
+                Vec3d toPlayer   = player.getPos().subtract(currCenter);
+                double dot       = seg.dotProduct(toPlayer);
+                double segLenSq  = seg.dotProduct(seg);
+                if (dot > segLenSq * 0.85) {   // 85% through segment = skip
+                    currentPathIndex++;
+                    nextWaypoint = currentPath.get(currentPathIndex);
+                } else {
+                    break;
+                }
+            }
+
+            // Jump over 1-block obstacles and handle horizontal stalls
+            movementHelper.handleJump(player, nextWaypoint);
+            // Smoothly steer and hold forward — no key release between waypoints
             movementHelper.moveTowards(player, nextWaypoint);
         } else {
-            // Path ended but not at destination — recalculate
-            state = MacroState.PATHFINDING;
+            // Path ended but we're not at the destination — recalculate
             movementHelper.releaseAllInputs();
+            state = MacroState.PATHFINDING;
         }
     }
 
     private void tickMining(ClientPlayerEntity player, ClientWorld world, MinecraftClient client) {
         MacroStep step = getCurrentStep();
-        if (step == null || step.getTargets().isEmpty() || step.isComplete()) {
+        if (step == null || (step.getTargets().isEmpty() && step.getRadius() <= 0) || step.isComplete()) {
+            advanceToNextStep();
+            return;
+        }
+
+        // ── Radius scan: on first entry for this step, find matching blocks nearby ───
+        if (!radiusScanDone) {
+            radiusScanDone = true;
+            if (!step.getTargets().isEmpty()) {
+                scanRadiusTargets(step, world);
+            }
+        }
+
+        if (step.isComplete()) {
             advanceToNextStep();
             return;
         }
 
         // Check mining delay
-        if (miningDelayTicks > 0) {
-            miningDelayTicks--;
+        if (System.currentTimeMillis() < miningDelayEndMs) {
             return;
         }
 
@@ -377,7 +499,7 @@ public class MacroExecutor {
                 blocksMinedTotal++;
                 currentBlockTargetIndex++;
                 isMiningBlock = false;
-                miningDelayTicks = currentMacro.getConfig().getMiningDelay() / 50; // convert ms to ticks
+                miningDelayEndMs = System.currentTimeMillis() + currentMacro.getConfig().getMiningDelay();
                 continue;
             }
 
@@ -397,6 +519,10 @@ public class MacroExecutor {
             double reachDist = player.getBlockInteractionRange();
             if (!BlockUtils.isWithinReach(eyePos, target.getPos(), reachDist)) {
                 // Too far — need to move closer; mark as skipped for now
+                
+                // Move forward to the block until it's within reach, then we can mine it in-place without needing to re-pathfind
+                movementHelper.forwardToBlock(player, target.getPos());
+                
                 target.setSkipped(true);
                 blocksSkippedTotal++;
                 currentBlockTargetIndex++;
@@ -404,12 +530,12 @@ public class MacroExecutor {
                 continue;
             }
 
-            // Smoothly look at the block
-            movementHelper.lookAt(player, target.getPos(), 0.5f);
+            // Smoothly look at the block using lerp (0.10 = 10% per tick, ease-out)
+            movementHelper.lookAt(player, target.getPos(), 0.10f);
 
-            // Wait until we're looking roughly at the target
+            // Wait until roughly aligned to avoid starting mining at wrong face angles.
             if (!movementHelper.isLookingAt(player, target.getPos(), 10.0f)) {
-                return; // Keep looking, try again next tick
+                return;
             }
 
             // Start or continue mining
@@ -432,7 +558,7 @@ public class MacroExecutor {
                     blocksMinedTotal++;
                     currentBlockTargetIndex++;
                     isMiningBlock = false;
-                    miningDelayTicks = currentMacro.getConfig().getMiningDelay() / 50;
+                    miningDelayEndMs = System.currentTimeMillis() + currentMacro.getConfig().getMiningDelay();
                 }
 
                 // Stuck mining timeout (5 seconds)
@@ -455,12 +581,60 @@ public class MacroExecutor {
         advanceToNextStep();
     }
 
+    /**
+     * Scans a cube of radius {@code step.getRadius()} (default 5) around the step
+     * destination and appends any blocks whose ID matches one of the step's already-
+     * registered targets — as long as the position isn't already listed.
+     *
+     * <p>Blocks that aren't in reach when the player arrives are still added;
+     * {@code tickMining} will call {@code forwardToBlock} to close the gap.</p>
+     */
+    private void scanRadiusTargets(MacroStep step, ClientWorld world) {
+        int radius = step.getRadius();
+        if (radius <= 0) return;
+
+        // Collect the block IDs we are looking for (from explicitly listed targets)
+        java.util.Set<String> wantedIds = new HashSet<>();
+        for (BlockTarget t : step.getTargets()) {
+            wantedIds.add(t.getBlockId());
+        }
+        if (wantedIds.isEmpty()) return;
+
+        // Build a set of positions already in the list to avoid duplicates
+        java.util.Set<BlockPos> knownPositions = new HashSet<>();
+        for (BlockTarget t : step.getTargets()) {
+            knownPositions.add(t.getPos());
+        }
+
+        BlockPos center = step.getDestination();
+        int added = 0;
+        for (int dx = -radius; dx <= radius; dx++) {
+            for (int dy = -radius; dy <= radius; dy++) {
+                for (int dz = -radius; dz <= radius; dz++) {
+                    BlockPos candidate = center.add(dx, dy, dz);
+                    if (knownPositions.contains(candidate)) continue;
+                    if (BlockUtils.isAir(world, candidate)) continue;
+                    String id = BlockUtils.getBlockId(world, candidate);
+                    if (wantedIds.contains(id)) {
+                        step.addTarget(new BlockTarget(candidate, id));
+                        knownPositions.add(candidate);
+                        added++;
+                    }
+                }
+            }
+        }
+        if (added > 0) {
+            LOGGER.debug("Radius scan found {} extra blocks for step {}", added, currentStepIndex);
+        }
+    }
+
     // ═══════════════════════════════════════════════════════════════
     // Helper methods
     // ═══════════════════════════════════════════════════════════════
 
     private void advanceToNextStep() {
         currentStepIndex++;
+        radiusScanDone = false;
 
         if (currentStepIndex >= currentMacro.getSteps().size()) {
             if (currentMacro.getConfig().isLoop()) {
@@ -470,8 +644,8 @@ public class MacroExecutor {
                 state = MacroState.PATHFINDING;
                 LOGGER.info("Macro loop: restarting from step 0");
             } else {
-                state = MacroState.COMPLETED;
                 movementHelper.releaseAllInputs();
+                state = MacroState.COMPLETED;
                 printStats();
                 LOGGER.info("Macro '{}' completed", currentMacro.getName());
             }
@@ -496,6 +670,17 @@ public class MacroExecutor {
             return null;
         }
         return currentMacro.getSteps().get(currentStepIndex);
+    }
+
+    private List<BlockPos> toBlockPosPath(List<BaseBlockPos> stevebotPath) {
+        if (stevebotPath == null || stevebotPath.isEmpty()) {
+            return List.of();
+        }
+        List<BlockPos> converted = new ArrayList<>(stevebotPath.size());
+        for (BaseBlockPos pos : stevebotPath) {
+            converted.add(new BlockPos(pos.getX(), pos.getY(), pos.getZ()));
+        }
+        return converted;
     }
 
     private void printStats() {
@@ -528,6 +713,16 @@ public class MacroExecutor {
      */
     public MacroState getState() {
         return state;
+    }
+
+    /** Returns the active navigation path (waypoints), or null if not navigating. */
+    public List<BlockPos> getCurrentPath() {
+        return currentPath;
+    }
+
+    /** Returns the index of the next waypoint in the active path. */
+    public int getCurrentPathIndex() {
+        return currentPathIndex;
     }
 
     /**
@@ -565,13 +760,6 @@ public class MacroExecutor {
     public int getTotalBlocksInStep() {
         MacroStep step = getCurrentStep();
         return step != null ? step.getTargets().size() : 0;
-    }
-
-    /**
-     * Returns the current path (for rendering preview).
-     */
-    public List<BlockPos> getCurrentPath() {
-        return currentPath;
     }
 
     /**

@@ -1,0 +1,20 @@
+{
+    "schemaVersion": 1,
+    "id": "client-pathfinder",
+    "version": "${version}",
+    "name": "Client Pathfinder",
+    "description": "Client-side A* pathfinding with 3D renderer and fluid movement controller",
+    "authors": ["User"],
+    "contact": {},
+    "license": "MIT",
+    "environment": "client",
+    "entrypoints": {
+        "client": ["com.cpathfinder.ClientPathfinderMod"]
+    },
+    "depends": {
+        "fabricloader": ">=0.18.0",
+        "minecraft": "~1.21",
+        "java": ">=21",
+        "fabric-api": "*"
+    }
+}

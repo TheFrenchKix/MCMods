@@ -6,7 +6,6 @@ import com.example.macromod.manager.MacroManager;
 import com.example.macromod.model.Macro;
 import com.example.macromod.model.MacroState;
 import com.example.macromod.model.MacroStep;
-import com.example.macromod.recording.MacroRecorder;
 import com.example.macromod.util.JsonUtils;
 import com.mojang.brigadier.CommandDispatcher;
 import com.mojang.brigadier.arguments.StringArgumentType;

@@ -168,6 +168,7 @@ public class HudOverlay {
     private String getStateDisplay(MacroState state) {
         return switch (state) {
             case IDLE -> "Idle";
+            case PRECOMPUTING -> "Computing paths...";
             case PATHFINDING -> "Pathfinding...";
             case MOVING -> "Moving...";
             case MINING -> "Mining...";
@@ -181,6 +182,7 @@ public class HudOverlay {
     private int getStateColor(MacroState state) {
         return switch (state) {
             case IDLE -> 0xAAAAAA;
+            case PRECOMPUTING -> 0xAA55FF;
             case PATHFINDING, MOVING -> 0x55FFFF;
             case MINING -> 0xFFAA00;
             case NEXT_STEP -> 0x55FF55;

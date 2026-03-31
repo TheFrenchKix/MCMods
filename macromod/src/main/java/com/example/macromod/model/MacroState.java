@@ -10,7 +10,9 @@ import net.fabricmc.api.Environment;
 public enum MacroState {
     /** No macro running. */
     IDLE,
-    /** Computing path to next waypoint. */
+    /** Pre-computing all step paths before movement begins. */
+    PRECOMPUTING,
+    /** Computing path to next waypoint (live fallback / stuck recovery). */
     PATHFINDING,
     /** Moving along computed path. */
     MOVING,

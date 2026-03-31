@@ -1,259 +1,256 @@
 package com.example.macromod.pathfinding;
 
 import com.example.macromod.util.BlockUtils;
-import net.fabricmc.api.EnvType;
-import net.fabricmc.api.Environment;
 import net.minecraft.client.world.ClientWorld;
 import net.minecraft.util.math.BlockPos;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
-import java.util.*;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.PriorityQueue;
 
 /**
- * Client-side A* pathfinding implementation for navigating through the Minecraft world.
- * Supports walking, jumping (1 block up), and descending (1-2 blocks down).
- * Avoids dangerous blocks like lava, fire, and cactus.
+ * A* fallback pathfinder with full 8-directional (diagonal) movement.
+ *
+ * <p>Design principles (per diagonal movement spec):
+ * <ul>
+ *   <li>Straight cost = 1.0, diagonal cost = √2 (~1.414)</li>
+ *   <li>Heuristic = Octile distance — consistent with 8-directional movement,
+ *       prevents zig-zag artifacts that Manhattan would introduce</li>
+ *   <li>Corner-cutting prevention — a diagonal move (dx,dz) is only allowed
+ *       when both orthogonal neighbours (dx,0) and (0,dz) are also passable</li>
+ *   <li>3D clearance — both axes of a diagonal step are validated independently
+ *       for ground support and 2-block headroom</li>
+ *   <li>Path simplification — collinear nodes (same direction vector including
+ *       diagonals) are collapsed to start + end only</li>
+ * </ul>
+ * </p>
  */
-@Environment(EnvType.CLIENT)
 public class PathFinder {
 
-    private static final Logger LOGGER = LoggerFactory.getLogger("macromod");
+    private static final double SQRT2 = Math.sqrt(2.0);
 
-    /** Maximum number of nodes to expand before giving up. */
-    private int maxNodes = 2000;
-
-    /** Movement offsets: 4 cardinal + 4 diagonal directions. */
-    private static final int[][] HORIZONTAL_OFFSETS = {
-            {1, 0}, {-1, 0}, {0, 1}, {0, -1},     // cardinal
-            {1, 1}, {1, -1}, {-1, 1}, {-1, -1}     // diagonal
+    // ── Neighbour offsets: 4 straight then 4 diagonal ─────────────
+    // Each entry: {dx, dz, isDiagonal}
+    private static final int[][] OFFSETS = {
+            // straight
+            { 1,  0, 0}, {-1,  0, 0}, { 0,  1, 0}, { 0, -1, 0},
+            // diagonal
+            { 1,  1, 1}, { 1, -1, 1}, {-1,  1, 1}, {-1, -1, 1}
     };
 
-    public PathFinder() {
-    }
+    private int maxNodes = 5000;
 
-    public PathFinder(int maxNodes) {
+    public void setMaxNodes(int maxNodes) {
         this.maxNodes = maxNodes;
     }
 
-    /**
-     * Finds a path from start to goal using A* algorithm.
-     *
-     * @param start the starting position (player feet position)
-     * @param goal  the target position
-     * @param world the client world
-     * @return ordered list of positions from start to goal, or null if no path found
-     */
+    // ═══════════════════════════════════════════════════════════════
+    // Public API
+    // ═══════════════════════════════════════════════════════════════
+
     public List<BlockPos> findPath(BlockPos start, BlockPos goal, ClientWorld world) {
-        PriorityQueue<PathNode> openSet = new PriorityQueue<>();
-        Map<BlockPos, PathNode> allNodes = new HashMap<>();
+        Map<BlockPos, BlockPos>  cameFrom = new HashMap<>();
+        Map<BlockPos, Double>    gScore   = new HashMap<>();
 
-        PathNode startNode = new PathNode(start);
-        startNode.setG(0);
-        startNode.setH(heuristic(start, goal));
-        openSet.add(startNode);
-        allNodes.put(start, startNode);
+        // f(n) = g(n) + h(n); tie-break on h so we prefer nodes closer to goal
+        PriorityQueue<BlockPos> openSet = new PriorityQueue<>((a, b) -> {
+            double fa = gScore.getOrDefault(a, Double.MAX_VALUE) + heuristic(a, goal);
+            double fb = gScore.getOrDefault(b, Double.MAX_VALUE) + heuristic(b, goal);
+            if (fa != fb) return Double.compare(fa, fb);
+            return Double.compare(heuristic(a, goal), heuristic(b, goal));
+        });
 
-        int nodesExpanded = 0;
+        gScore.put(start, 0.0);
+        openSet.add(start);
 
-        while (!openSet.isEmpty() && nodesExpanded < maxNodes) {
-            PathNode current = openSet.poll();
-            nodesExpanded++;
+        int explored = 0;
+        while (!openSet.isEmpty() && explored < maxNodes) {
+            BlockPos current = openSet.poll();
+            explored++;
 
-            // Goal reached
-            if (current.getPos().equals(goal)) {
-                return reconstructPath(current);
+            if (current.equals(goal) || isNear(current, goal)) {
+                return simplifyPath(reconstructPath(cameFrom, current));
             }
 
-            // Also accept being close to goal (horizontally within 1 block)
-            if (isCloseEnough(current.getPos(), goal)) {
-                return reconstructPath(current);
-            }
+            double gCurrent = gScore.getOrDefault(current, Double.MAX_VALUE);
 
-            // Expand neighbors
-            for (BlockPos neighborPos : getNeighbors(current.getPos(), world)) {
-                double moveCost = getMoveCost(current.getPos(), neighborPos);
-                double tentativeG = current.getG() + moveCost;
-
-                PathNode neighborNode = allNodes.get(neighborPos);
-                if (neighborNode == null) {
-                    neighborNode = new PathNode(neighborPos);
-                    allNodes.put(neighborPos, neighborNode);
-                }
-
-                if (tentativeG < neighborNode.getG()) {
-                    neighborNode.setParent(current);
-                    neighborNode.setG(tentativeG);
-                    neighborNode.setH(heuristic(neighborPos, goal));
-                    // Re-add to open set (priority queue handles ordering)
-                    openSet.remove(neighborNode);
-                    openSet.add(neighborNode);
+            for (Move move : getNeighbors(current, world)) {
+                double tentativeG = gCurrent + move.cost;
+                if (tentativeG < gScore.getOrDefault(move.pos, Double.MAX_VALUE)) {
+                    cameFrom.put(move.pos, current);
+                    gScore.put(move.pos, tentativeG);
+                    // Re-add even if already present; stale entries are harmless —
+                    // they'll be skipped once their g-score is no longer optimal.
+                    openSet.add(move.pos);
                 }
             }
         }
 
-        LOGGER.warn("No path found from {} to {} after expanding {} nodes", start, goal, nodesExpanded);
         return null;
     }
 
+    // ═══════════════════════════════════════════════════════════════
+    // Heuristic — Octile distance
+    // ═══════════════════════════════════════════════════════════════
+
     /**
-     * Euclidean distance heuristic.
+     * Octile distance: consistent with 8-directional movement.
+     * h = max(dx,dz) + (√2−1)·min(dx,dz)
+     * A vertical penalty keeps the search biased toward the correct Y level.
      */
     private double heuristic(BlockPos a, BlockPos b) {
-        double dx = a.getX() - b.getX();
-        double dy = a.getY() - b.getY();
-        double dz = a.getZ() - b.getZ();
-        return Math.sqrt(dx * dx + dy * dy + dz * dz);
+        int dx = Math.abs(a.getX() - b.getX());
+        int dy = Math.abs(a.getY() - b.getY());
+        int dz = Math.abs(a.getZ() - b.getZ());
+        double horizontal = Math.max(dx, dz) + (SQRT2 - 1.0) * Math.min(dx, dz);
+        return horizontal + dy * 2.0; // vertical steps cost more (jump/fall penalty)
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    // Neighbour generation
+    // ═══════════════════════════════════════════════════════════════
+
+    private static final class Move {
+        final BlockPos pos;
+        final double   cost;
+        Move(BlockPos pos, double cost) { this.pos = pos; this.cost = cost; }
     }
 
     /**
-     * Returns true if the position is close enough to the goal to consider it reached.
+     * Generates valid neighbouring positions from {@code pos}.
+     *
+     * <p>For each of the 8 horizontal directions (4 straight + 4 diagonal) we
+     * try three vertical variants: same Y, +1 (step up), −1 (step down).</p>
+     *
+     * <p>Diagonal moves additionally enforce corner-cutting prevention:
+     * both orthogonal axis intermediates must be passable on the player's
+     * column before the diagonal is accepted.</p>
      */
-    private boolean isCloseEnough(BlockPos pos, BlockPos goal) {
-        int dx = Math.abs(pos.getX() - goal.getX());
-        int dy = Math.abs(pos.getY() - goal.getY());
-        int dz = Math.abs(pos.getZ() - goal.getZ());
-        return dx <= 1 && dy <= 1 && dz <= 1;
-    }
+    private List<Move> getNeighbors(BlockPos pos, ClientWorld world) {
+        List<Move> moves = new ArrayList<>(16);
 
-    /**
-     * Returns movement cost between two adjacent positions.
-     */
-    private double getMoveCost(BlockPos from, BlockPos to) {
-        int dx = Math.abs(from.getX() - to.getX());
-        int dz = Math.abs(from.getZ() - to.getZ());
-        int dy = to.getY() - from.getY();
+        for (int[] off : OFFSETS) {
+            int  dx         = off[0];
+            int  dz         = off[1];
+            boolean isDiag  = off[2] == 1;
+            double baseCost = isDiag ? SQRT2 : 1.0;
 
-        double baseCost = (dx + dz == 2) ? 1.414 : 1.0; // diagonal vs cardinal
-        if (dy > 0) baseCost += 0.5; // jumping costs more
-        if (dy < 0) baseCost += 0.3; // falling is slightly costly
-        return baseCost;
-    }
+            // ── Corner-cutting guard ──────────────────────────────
+            // For diagonal (dx, dz): both (dx,0) and (0,dz) axes must be
+            // passable at the player's current level and one above.
+            if (isDiag && !diagonalClear(pos, dx, dz, world)) continue;
 
-    /**
-     * Returns all valid neighbor positions from the given position.
-     * Checks walkability, jump/fall possibilities, and danger.
-     */
-    private List<BlockPos> getNeighbors(BlockPos pos, ClientWorld world) {
-        List<BlockPos> neighbors = new ArrayList<>();
+            // ── Try three vertical variants ───────────────────────
+            BlockPos flat = pos.add(dx, 0,  dz);
+            BlockPos up   = pos.add(dx, 1,  dz);
+            BlockPos down = pos.add(dx, -1, dz);
 
-        for (int[] offset : HORIZONTAL_OFFSETS) {
-            int dx = offset[0];
-            int dz = offset[1];
-
-            // Same level: walk
-            BlockPos sameLevel = pos.add(dx, 0, dz);
-            if (canWalkTo(world, pos, sameLevel)) {
-                neighbors.add(sameLevel);
-                continue; // don't check jump/fall if we can walk
-            }
-
-            // One block up: jump
-            BlockPos oneUp = pos.add(dx, 1, dz);
-            if (canJumpTo(world, pos, oneUp)) {
-                neighbors.add(oneUp);
-            }
-
-            // One block down: step down
-            BlockPos oneDown = pos.add(dx, -1, dz);
-            if (canFallTo(world, pos, oneDown)) {
-                neighbors.add(oneDown);
-            }
-
-            // Two blocks down: fall
-            BlockPos twoDown = pos.add(dx, -2, dz);
-            if (canFallTo(world, pos, twoDown)) {
-                neighbors.add(twoDown);
+            if (canStandAt(flat, world)) {
+                moves.add(new Move(flat, baseCost));
+            } else if (canStandAt(up, world) && BlockUtils.isPassable(world, pos.up())) {
+                // Step up: only 1 block; headroom at current pos must be clear
+                // Diagonal step-up: both intermediate columns must also clear at y+1
+                if (!isDiag || diagonalClear(pos.up(), dx, dz, world)) {
+                    moves.add(new Move(up, baseCost + 0.5)); // slight extra cost for step
+                }
+            } else if (canStandAt(down, world)) {
+                moves.add(new Move(down, baseCost));
             }
         }
 
-        return neighbors;
+        return moves;
     }
 
     /**
-     * Checks if the player can walk from 'from' to 'to' at the same level.
-     * Requires: solid ground below 'to', passable at 'to' and 'to.up()', no danger.
+     * Returns true when both orthogonal intermediates of a diagonal move are
+     * passable — prevents cutting through wall corners.
+     *
+     * <p>Checks two blocks per axis (feet + head) so a 2-block-tall player
+     * cannot clip through a 1-block gap at shoulder height.</p>
      */
-    private boolean canWalkTo(ClientWorld world, BlockPos from, BlockPos to) {
-        if (!BlockUtils.isChunkLoaded(world, to)) return false;
-        if (BlockUtils.isDangerous(world, to) || BlockUtils.isDangerous(world, to.down())) return false;
-
-        // Must have solid ground below and two passable blocks for the player body
-        if (!BlockUtils.isSolid(world, to.down())) return false;
-        if (!BlockUtils.isPassable(world, to)) return false;
-        if (!BlockUtils.isPassable(world, to.up())) return false;
-
-        // For diagonal movement, check that both cardinal blocks are passable
-        int dx = to.getX() - from.getX();
-        int dz = to.getZ() - from.getZ();
-        if (dx != 0 && dz != 0) {
-            BlockPos mid1 = from.add(dx, 0, 0);
-            BlockPos mid2 = from.add(0, 0, dz);
-            if (!BlockUtils.isPassable(world, mid1) || !BlockUtils.isPassable(world, mid1.up())) return false;
-            if (!BlockUtils.isPassable(world, mid2) || !BlockUtils.isPassable(world, mid2.up())) return false;
-        }
-
-        return true;
+    private boolean diagonalClear(BlockPos from, int dx, int dz, ClientWorld world) {
+        BlockPos axisX = from.add(dx, 0, 0);
+        BlockPos axisZ = from.add(0,  0, dz);
+        return BlockUtils.isPassable(world, axisX)
+                && BlockUtils.isPassable(world, axisX.up())
+                && BlockUtils.isPassable(world, axisZ)
+                && BlockUtils.isPassable(world, axisZ.up());
     }
 
-    /**
-     * Checks if the player can jump from 'from' to 'to' (1 block up).
-     * Requires: room to jump (3 blocks of head clearance at from),
-     * solid block below 'to', passable at 'to' and 'to.up()'.
-     */
-    private boolean canJumpTo(ClientWorld world, BlockPos from, BlockPos to) {
-        if (!BlockUtils.isChunkLoaded(world, to)) return false;
-        if (BlockUtils.isDangerous(world, to) || BlockUtils.isDangerous(world, to.down())) return false;
+    // ═══════════════════════════════════════════════════════════════
+    // Walkability
+    // ═══════════════════════════════════════════════════════════════
 
-        // Player needs headroom at starting position (3 blocks: feet, body, jump clearance)
-        if (!BlockUtils.isPassable(world, from.up(2))) return false;
-
-        // Destination checks
-        if (!BlockUtils.isSolid(world, to.down())) return false;
-        if (!BlockUtils.isPassable(world, to)) return false;
-        if (!BlockUtils.isPassable(world, to.up())) return false;
-
-        return true;
+    /** A position is valid to stand at when the block below is solid and the
+     *  2-block player column (feet + head) is passable. */
+    private boolean canStandAt(BlockPos pos, ClientWorld world) {
+        return BlockUtils.isSolid(world, pos.down())
+                && BlockUtils.isPassable(world, pos)
+                && BlockUtils.isPassable(world, pos.up());
     }
 
-    /**
-     * Checks if the player can fall from 'from' to 'to' (1-2 blocks down).
-     * Requires: passable in the horizontal movement gap, solid ground at 'to'.
-     */
-    private boolean canFallTo(ClientWorld world, BlockPos from, BlockPos to) {
-        if (!BlockUtils.isChunkLoaded(world, to)) return false;
-        if (BlockUtils.isDangerous(world, to) || BlockUtils.isDangerous(world, to.down())) return false;
+    // ═══════════════════════════════════════════════════════════════
+    // Path reconstruction
+    // ═══════════════════════════════════════════════════════════════
 
-        // Destination must have solid ground and passable body space
-        if (!BlockUtils.isSolid(world, to.down())) return false;
-        if (!BlockUtils.isPassable(world, to)) return false;
-        if (!BlockUtils.isPassable(world, to.up())) return false;
-
-        // Check the intermediate horizontal position is passable at from's level
-        int dx = to.getX() - from.getX();
-        int dz = to.getZ() - from.getZ();
-        BlockPos horizontalStep = from.add(dx, 0, dz);
-        if (!BlockUtils.isPassable(world, horizontalStep)) return false;
-        if (!BlockUtils.isPassable(world, horizontalStep.up())) return false;
-
-        return true;
-    }
-
-    /**
-     * Reconstructs the path from goal node back to start by following parent pointers.
-     */
-    private List<BlockPos> reconstructPath(PathNode goalNode) {
+    private List<BlockPos> reconstructPath(Map<BlockPos, BlockPos> cameFrom, BlockPos end) {
         List<BlockPos> path = new ArrayList<>();
-        PathNode current = goalNode;
-        while (current != null) {
-            path.add(current.getPos());
-            current = current.getParent();
+        BlockPos current = end;
+        while (cameFrom.containsKey(current)) {
+            path.add(current);
+            current = cameFrom.get(current);
         }
         Collections.reverse(path);
         return path;
     }
 
-    public void setMaxNodes(int maxNodes) {
-        this.maxNodes = maxNodes;
+    // ═══════════════════════════════════════════════════════════════
+    // Path simplification
+    // ═══════════════════════════════════════════════════════════════
+
+    /**
+     * Collapses runs of nodes with the same direction vector (including
+     * diagonals) into just their start and end.  A diagonal run of 10 blocks
+     * becomes 2 waypoints instead of 11; direction changes (turns, height
+     * steps) are always preserved.
+     */
+    private List<BlockPos> simplifyPath(List<BlockPos> path) {
+        if (path.size() <= 2) return path;
+        List<BlockPos> result = new ArrayList<>();
+        result.add(path.get(0));
+
+        for (int i = 1; i < path.size() - 1; i++) {
+            BlockPos prev = result.get(result.size() - 1);
+            BlockPos curr = path.get(i);
+            BlockPos next = path.get(i + 1);
+
+            int dx1 = Integer.signum(curr.getX() - prev.getX());
+            int dz1 = Integer.signum(curr.getZ() - prev.getZ());
+            int dy1 = Integer.signum(curr.getY() - prev.getY());
+
+            int dx2 = Integer.signum(next.getX() - curr.getX());
+            int dz2 = Integer.signum(next.getZ() - curr.getZ());
+            int dy2 = Integer.signum(next.getY() - curr.getY());
+
+            if (dx1 != dx2 || dz1 != dz2 || dy1 != dy2) {
+                result.add(curr);
+            }
+        }
+
+        result.add(path.get(path.size() - 1));
+        return result;
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    // Misc
+    // ═══════════════════════════════════════════════════════════════
+
+    private boolean isNear(BlockPos a, BlockPos b) {
+        return Math.abs(a.getX() - b.getX()) <= 1
+                && Math.abs(a.getY() - b.getY()) <= 1
+                && Math.abs(a.getZ() - b.getZ()) <= 1;
     }
 }

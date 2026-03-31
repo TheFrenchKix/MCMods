@@ -21,7 +21,7 @@ public class MacroConfig {
     /** Delay in milliseconds between mining each block. */
     private int miningDelay;
 
-    /** Timeout in ticks for navigation to a waypoint. */
+    /** Timeout in milliseconds for navigation to a waypoint. */
     private int moveTimeout;
 
     /** Distance to consider the player has arrived at a waypoint. */
@@ -32,8 +32,8 @@ public class MacroConfig {
         this.skipMismatch = true;
         this.stopOnDanger = true;
         this.miningDelay = 50;
-        this.moveTimeout = 200;
-        this.arrivalRadius = 1.5f;
+        this.moveTimeout = 10000;
+        this.arrivalRadius = 0.5f;
     }
 
     public boolean isLoop() {

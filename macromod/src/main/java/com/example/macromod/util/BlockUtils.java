@@ -3,10 +3,8 @@ package com.example.macromod.util;
 import net.fabricmc.api.EnvType;
 import net.fabricmc.api.Environment;
 import net.minecraft.block.BlockState;
-import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.world.ClientWorld;
 import net.minecraft.registry.Registries;
-import net.minecraft.util.Identifier;
 import net.minecraft.util.math.BlockPos;
 import net.minecraft.util.math.Direction;
 import net.minecraft.util.math.Vec3d;
@@ -57,7 +55,7 @@ public final class BlockUtils {
      */
     public static boolean isPassable(ClientWorld world, BlockPos pos) {
         BlockState state = world.getBlockState(pos);
-        return !state.isSolidBlock(world, pos) && !state.isLiquid();
+        return !state.isSolidBlock(world, pos) && state.getFluidState().isEmpty();
     }
 
     /**
