@@ -10,7 +10,6 @@ import com.llamalad7.mixinextras.injector.ModifyReturnValue;
 import com.llamalad7.mixinextras.injector.v2.WrapWithCondition;
 import com.llamalad7.mixinextras.injector.wrapoperation.Operation;
 import com.llamalad7.mixinextras.injector.wrapoperation.WrapOperation;
-import com.llamalad7.mixinextras.sugar.Local;
 import lfmdevelopment.lfmclient.lfmClient;
 import lfmdevelopment.lfmclient.events.entity.player.DoAttackEvent;
 import lfmdevelopment.lfmclient.events.entity.player.DoItemUseEvent;
@@ -42,8 +41,6 @@ import net.minecraft.client.option.KeyBinding;
 import net.minecraft.client.util.Window;
 import net.minecraft.client.world.ClientWorld;
 import net.minecraft.entity.Entity;
-import net.minecraft.entity.player.PlayerEntity;
-import net.minecraft.item.ItemStack;
 import net.minecraft.util.hit.HitResult;
 import net.minecraft.util.profiler.Profilers;
 import org.jetbrains.annotations.Nullable;
@@ -271,3 +268,4 @@ public abstract class MinecraftClientMixin implements IMinecraftClient {
         this.framebuffer = framebuffer;
     }
 }
+

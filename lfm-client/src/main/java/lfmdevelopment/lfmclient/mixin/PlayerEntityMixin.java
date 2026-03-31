@@ -13,16 +13,12 @@ import lfmdevelopment.lfmclient.events.entity.player.ClipAtLedgeEvent;
 import lfmdevelopment.lfmclient.systems.modules.Modules;
 import lfmdevelopment.lfmclient.systems.modules.movement.NoSlow;
 import lfmdevelopment.lfmclient.systems.modules.movement.Sprint;
-import lfmdevelopment.lfmclient.utils.world.BlockUtils;
-import net.minecraft.block.BlockState;
 import net.minecraft.entity.EntityType;
 import net.minecraft.entity.ItemEntity;
 import net.minecraft.entity.LivingEntity;
 import net.minecraft.entity.player.PlayerAbilities;
 import net.minecraft.entity.player.PlayerEntity;
 import net.minecraft.item.ItemStack;
-import net.minecraft.util.hit.BlockHitResult;
-import net.minecraft.util.math.BlockPos;
 import net.minecraft.util.math.Vec3d;
 import net.minecraft.world.World;
 import org.spongepowered.asm.mixin.Mixin;
@@ -92,3 +88,4 @@ public abstract class PlayerEntityMixin extends LivingEntity {
         return Modules.get().get(Sprint.class).stopSprinting();
     }
 }
+

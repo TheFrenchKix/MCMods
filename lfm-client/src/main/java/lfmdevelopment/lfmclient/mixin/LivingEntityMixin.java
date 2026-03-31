@@ -25,10 +25,8 @@ import net.minecraft.registry.entry.RegistryEntry;
 import net.minecraft.util.Hand;
 import net.minecraft.world.World;
 import org.spongepowered.asm.mixin.Mixin;
-import org.spongepowered.asm.mixin.Unique;
 import org.spongepowered.asm.mixin.injection.*;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
-import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 
 import static lfmdevelopment.lfmclient.lfmClient.mc;
 
@@ -109,3 +107,4 @@ public abstract class LivingEntityMixin extends Entity {
         return original && (Math.abs(mc.player.forwardSpeed) > 1.0E-5F || Math.abs(mc.player.sidewaysSpeed) > 1.0E-5F);
     }
 }
+

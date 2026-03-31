@@ -10,9 +10,7 @@ import lfmdevelopment.lfmclient.lfmClient;
 import lfmdevelopment.lfmclient.events.entity.DropItemsEvent;
 import lfmdevelopment.lfmclient.events.entity.player.*;
 import lfmdevelopment.lfmclient.mixininterface.IClientPlayerInteractionManager;
-import lfmdevelopment.lfmclient.systems.modules.Modules;
 import lfmdevelopment.lfmclient.utils.world.BlockUtils;
-import net.minecraft.block.BlockState;
 import net.minecraft.client.network.ClientPlayerEntity;
 import net.minecraft.client.network.ClientPlayerInteractionManager;
 import net.minecraft.client.network.SequencedPacketCreator;
@@ -20,7 +18,6 @@ import net.minecraft.client.world.ClientWorld;
 import net.minecraft.entity.Entity;
 import net.minecraft.entity.player.PlayerEntity;
 import net.minecraft.item.ItemStack;
-import net.minecraft.network.packet.c2s.play.PlayerActionC2SPacket;
 import net.minecraft.screen.slot.SlotActionType;
 import net.minecraft.util.ActionResult;
 import net.minecraft.util.Hand;
@@ -36,7 +33,6 @@ import org.spongepowered.asm.mixin.injection.Redirect;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 
-import static lfmdevelopment.lfmclient.lfmClient.mc;
 
 @Mixin(ClientPlayerInteractionManager.class)
 public abstract class ClientPlayerInteractionManagerMixin implements IClientPlayerInteractionManager {
@@ -130,3 +126,4 @@ public abstract class ClientPlayerInteractionManagerMixin implements IClientPlay
         syncSelectedSlot();
     }
 }
+

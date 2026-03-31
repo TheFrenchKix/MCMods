@@ -9,7 +9,6 @@ import lfmdevelopment.lfmclient.gui.renderer.GuiRenderer;
 import lfmdevelopment.lfmclient.gui.renderer.packer.GuiTexture;
 import lfmdevelopment.lfmclient.gui.themes.lfm.lfmGuiTheme;
 import lfmdevelopment.lfmclient.gui.themes.lfm.lfmWidget;
-import lfmdevelopment.lfmclient.gui.widgets.pressable.WButton;
 import lfmdevelopment.lfmclient.gui.widgets.pressable.WConfirmedButton;
 import lfmdevelopment.lfmclient.utils.render.color.Color;
 

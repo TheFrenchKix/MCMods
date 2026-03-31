@@ -1,4 +1,4 @@
-package lfmdevelopment.lfmclient.systems.modules.macro;
+﻿package lfmdevelopment.lfmclient.systems.modules.macro;
 
 import lfmdevelopment.lfmclient.events.render.Render3DEvent;
 import lfmdevelopment.lfmclient.events.world.TickEvent;
@@ -433,3 +433,4 @@ public class MacroPlayer extends Module {
         COMPLETE
     }
 }
+

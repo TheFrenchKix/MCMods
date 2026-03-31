@@ -66,7 +66,7 @@ public class BaritoneSettings implements IPathManager.ISettings {
 
     // Wrappers
 
-    @SuppressWarnings({"rawtypes", "unchecked"})
+    @SuppressWarnings("unchecked")
     private void createWrappers() {
         SettingGroup sgBool = settings.createGroup("Checkboxes");
         SettingGroup sgDouble = settings.createGroup("Numbers");

@@ -10,7 +10,6 @@ import lfmdevelopment.lfmclient.systems.modules.Modules;
 import lfmdevelopment.lfmclient.systems.modules.movement.NoSlow;
 import net.minecraft.block.AbstractBlock;
 import net.minecraft.block.Block;
-import net.minecraft.block.BlockState;
 import net.minecraft.block.Blocks;
 import net.minecraft.item.ItemConvertible;
 import org.spongepowered.asm.mixin.Mixin;
@@ -33,3 +32,4 @@ public abstract class BlockMixin extends AbstractBlock implements ItemConvertibl
         else return original;
     }
 }
+

@@ -1,4 +1,4 @@
-/*
+﻿/*
  * This file is part of the lfm Client distribution (https://github.com/lfmDevelopment/lfm-client).
  * Copyright (c) lfm Development.
  */
@@ -103,3 +103,4 @@ public class Systems {
         return (T) systems.get(klass);
     }
 }
+

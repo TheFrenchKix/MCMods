@@ -9,7 +9,6 @@ import lfmdevelopment.lfmclient.events.world.TickEvent;
 import lfmdevelopment.lfmclient.settings.*;
 import lfmdevelopment.lfmclient.systems.modules.Categories;
 import lfmdevelopment.lfmclient.systems.modules.Module;
-import lfmdevelopment.lfmclient.systems.modules.Modules;
 import lfmdevelopment.lfmclient.utils.player.InvUtils;
 import lfmdevelopment.lfmclient.utils.player.SlotUtils;
 import meteordevelopment.orbit.EventHandler;
@@ -192,3 +191,5 @@ public class AutoReplenish extends Module {
         items[9] = mc.player.getOffHandStack().copy();
     }
 }
+
+

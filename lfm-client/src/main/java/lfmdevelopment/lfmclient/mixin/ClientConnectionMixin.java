@@ -11,24 +11,19 @@ import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.ChannelPipeline;
 import io.netty.handler.proxy.Socks4ProxyHandler;
 import io.netty.handler.proxy.Socks5ProxyHandler;
-import io.netty.handler.timeout.TimeoutException;
 import lfmdevelopment.lfmclient.lfmClient;
 import lfmdevelopment.lfmclient.events.packets.PacketEvent;
 import lfmdevelopment.lfmclient.events.world.ServerConnectEndEvent;
-import lfmdevelopment.lfmclient.systems.modules.Modules;
 import lfmdevelopment.lfmclient.systems.proxies.Proxies;
 import lfmdevelopment.lfmclient.systems.proxies.Proxy;
 import net.minecraft.network.ClientConnection;
 import net.minecraft.network.NetworkSide;
 import net.minecraft.network.NetworkingBackend;
-import net.minecraft.network.handler.PacketEncoderException;
 import net.minecraft.network.handler.PacketSizeLogger;
 import net.minecraft.network.listener.ClientPlayPacketListener;
 import net.minecraft.network.packet.Packet;
 import net.minecraft.network.packet.s2c.play.BundleS2CPacket;
-import net.minecraft.text.MutableText;
 import net.minecraft.text.Text;
-import net.minecraft.util.Formatting;
 import org.jetbrains.annotations.Nullable;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.injection.At;
@@ -89,3 +84,4 @@ public abstract class ClientConnectionMixin {
         }
     }
 }
+

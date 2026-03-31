@@ -9,7 +9,6 @@ import lfmdevelopment.lfmclient.mixininterface.IVec3d;
 import lfmdevelopment.lfmclient.pathing.PathManagers;
 import lfmdevelopment.lfmclient.systems.config.Config;
 import lfmdevelopment.lfmclient.systems.friends.Friends;
-import lfmdevelopment.lfmclient.systems.modules.Modules;
 import lfmdevelopment.lfmclient.utils.Utils;
 import lfmdevelopment.lfmclient.utils.entity.DamageUtils;
 import lfmdevelopment.lfmclient.utils.entity.EntityUtils;
@@ -369,3 +368,4 @@ public class PlayerUtils {
         return playerListEntry.getLatency();
     }
 }
+

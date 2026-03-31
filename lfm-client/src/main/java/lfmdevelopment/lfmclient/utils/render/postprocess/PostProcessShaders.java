@@ -1,4 +1,4 @@
-package lfmdevelopment.lfmclient.utils.render.postprocess;
+﻿package lfmdevelopment.lfmclient.utils.render.postprocess;
 
 import lfmdevelopment.lfmclient.lfmClient;
 import lfmdevelopment.lfmclient.events.render.Render2DEvent;
@@ -38,3 +38,4 @@ public class PostProcessShaders {
         ENTITY_OUTLINE.onResized(width, height);
     }
 }
+

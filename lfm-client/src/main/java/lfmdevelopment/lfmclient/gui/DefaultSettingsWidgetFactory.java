@@ -47,7 +47,7 @@ public class DefaultSettingsWidgetFactory extends SettingsWidgetFactory {
         factories.put(IntSetting.class, (table, setting) -> intW(table, (IntSetting) setting));
         factories.put(DoubleSetting.class, (table, setting) -> doubleW(table, (DoubleSetting) setting));
         factories.put(StringSetting.class, (table, setting) -> stringW(table, (StringSetting) setting));
-        factories.put(EnumSetting.class, (table, setting) -> enumW(table, (EnumSetting<? extends Enum<?>>) setting));
+        factories.put(EnumSetting.class, (table, setting) -> enumSettingW(table, setting));
         factories.put(ProvidedStringSetting.class, (table, setting) -> providedStringW(table, (ProvidedStringSetting) setting));
         factories.put(GenericSetting.class, (table, setting) -> genericW(table, (GenericSetting<?>) setting));
         factories.put(ColorSetting.class, (table, setting) -> colorW(table, (ColorSetting) setting));
@@ -102,6 +102,11 @@ public class DefaultSettingsWidgetFactory extends SettingsWidgetFactory {
     // If a different theme uses has different heights of widgets this can method can be overwritten to account for it in the setting titles
     protected double settingTitleTopMargin() {
         return 6;
+    }
+
+    @SuppressWarnings("unchecked")
+    private void enumSettingW(WTable table, Setting<?> setting) {
+        enumW(table, (EnumSetting<? extends Enum<?>>) setting);
     }
 
     private void group(WVerticalList list, SettingGroup group, String filter, List<RemoveInfo> removeInfoList) {

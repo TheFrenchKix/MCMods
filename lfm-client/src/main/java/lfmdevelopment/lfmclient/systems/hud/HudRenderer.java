@@ -12,7 +12,6 @@ import it.unimi.dsi.fastutil.ints.Int2ObjectMap;
 import it.unimi.dsi.fastutil.ints.Int2ObjectOpenHashMap;
 import lfmdevelopment.lfmclient.lfmClient;
 import lfmdevelopment.lfmclient.events.lfm.CustomFontChangedEvent;
-import lfmdevelopment.lfmclient.mixininterface.IGameRenderer;
 import lfmdevelopment.lfmclient.renderer.*;
 import lfmdevelopment.lfmclient.renderer.text.CustomTextRenderer;
 import lfmdevelopment.lfmclient.renderer.text.Font;
@@ -328,3 +327,5 @@ public class HudRenderer {
         }
     }
 }
+
+

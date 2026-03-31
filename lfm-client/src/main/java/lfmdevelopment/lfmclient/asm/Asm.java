@@ -42,6 +42,7 @@ public class Asm {
         INSTANCE = new Asm(System.getProperty("lfm.asm.export") != null);
     }
 
+    @SuppressWarnings("unused")
     private void add(AsmTransformer transformer) {
         transformers.put(transformer.targetName, transformer);
     }

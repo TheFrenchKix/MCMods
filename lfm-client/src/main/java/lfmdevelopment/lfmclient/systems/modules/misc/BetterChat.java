@@ -1,4 +1,4 @@
-/*
+﻿/*
  * This file is part of the lfm Client distribution (https://github.com/lfmDevelopment/lfm-client).
  * Copyright (c) lfm Development.
  */
@@ -61,7 +61,7 @@ public class BetterChat extends Module {
 
     private final Setting<Boolean> fancy = sgGeneral.add(new BoolSetting.Builder()
         .name("fancy-chat")
-        .description("Makes your messages ғᴀɴᴄʏ!")
+        .description("Makes your messages Ò“á´€É´á´„Ê!")
         .defaultValue(false)
         .build()
     );
@@ -247,7 +247,7 @@ public class BetterChat extends Module {
         super(Categories.Misc, "better-chat", "Improves your chat experience in various ways.");
 
         String[] a = "abcdefghijklmnopqrstuvwxyz".split("");
-        String[] b = "ᴀʙᴄᴅᴇꜰɢʜɪᴊᴋʟᴍɴᴏᴩqʀꜱᴛᴜᴠᴡxyᴢ".split("");
+        String[] b = "á´€Ê™á´„á´…á´‡êœ°É¢ÊœÉªá´Šá´‹ÊŸá´É´á´á´©qÊ€êœ±á´›á´œá´ á´¡xyá´¢".split("");
         for (int i = 0; i < a.length; i++) SMALL_CAPS.put(a[i].charAt(0), b[i].charAt(0));
         compileFilterRegexList();
     }
@@ -595,3 +595,4 @@ public class BetterChat extends Module {
         return longerChatLines.get();
     }
 }
+

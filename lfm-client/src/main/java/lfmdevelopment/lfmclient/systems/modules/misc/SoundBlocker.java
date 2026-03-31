@@ -1,4 +1,4 @@
-/*
+﻿/*
  * This file is part of the lfm Client distribution (https://github.com/lfmDevelopment/lfm-client).
  * Copyright (c) lfm Development.
  */
@@ -45,3 +45,4 @@ public class SoundBlocker extends Module {
         return isActive() && sounds.get().contains(Setting.parseId(Registries.SOUND_EVENT, soundInstance.getId().getPath()));
     }
 }
+

@@ -126,6 +126,8 @@ public class InventoryHud extends HudElement {
         switch (background.get()) {
             case Texture, Outline -> renderer.texture(background.get() == Background.Texture ? TEXTURE : TEXTURE_TRANSPARENT, x, y, w, h, color);
             case Flat -> renderer.quad(x, y, w, h, color);
+            case None -> {
+            }
         }
     }
 

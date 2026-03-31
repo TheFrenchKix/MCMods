@@ -7,7 +7,6 @@ package lfmdevelopment.lfmclient.utils.world;
 
 import lfmdevelopment.lfmclient.lfmClient;
 import lfmdevelopment.lfmclient.events.world.TickEvent;
-import lfmdevelopment.lfmclient.systems.modules.Modules;
 import lfmdevelopment.lfmclient.utils.PreInit;
 import lfmdevelopment.lfmclient.utils.Utils;
 import lfmdevelopment.lfmclient.utils.player.FindItemResult;
@@ -419,3 +418,5 @@ public class BlockUtils {
         return mutable.set(origin.getX() + xOffset, origin.getY() + yOffset, origin.getZ() + zOffset);
     }
 }
+
+

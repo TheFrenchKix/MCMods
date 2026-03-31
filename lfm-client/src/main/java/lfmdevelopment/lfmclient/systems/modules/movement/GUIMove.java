@@ -1,4 +1,4 @@
-/*
+﻿/*
  * This file is part of the lfm Client distribution (https://github.com/lfmDevelopment/lfm-client).
  * Copyright (c) lfm Development.
  */
@@ -186,3 +186,4 @@ public class GUIMove extends Module {
         return screens.get() == Screens.Inventory && mc.currentScreen instanceof WidgetScreen;
     }
 }
+

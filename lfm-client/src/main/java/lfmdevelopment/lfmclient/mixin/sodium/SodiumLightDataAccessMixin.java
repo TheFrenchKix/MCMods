@@ -8,7 +8,6 @@ package lfmdevelopment.lfmclient.mixin.sodium;
 import lfmdevelopment.lfmclient.systems.modules.Modules;
 import lfmdevelopment.lfmclient.systems.modules.render.Fullbright;
 import net.caffeinemc.mods.sodium.client.model.light.data.LightDataAccess;
-import net.minecraft.block.BlockState;
 import net.minecraft.util.math.BlockPos;
 import net.minecraft.world.BlockRenderView;
 import net.minecraft.world.LightType;
@@ -48,3 +47,4 @@ public abstract class SodiumLightDataAccessMixin {
         return Math.max(fb.getLuminance(LightType.BLOCK), bl);
     }
 }
+

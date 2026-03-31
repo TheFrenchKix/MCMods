@@ -1,4 +1,4 @@
-/*
+﻿/*
  * This file is part of the lfm Client distribution (https://github.com/lfmDevelopment/lfm-client).
  * Copyright (c) lfm Development.
  */
@@ -101,3 +101,4 @@ public class Macros extends System<Macros> implements Iterable<Macro> {
         return this;
     }
 }
+

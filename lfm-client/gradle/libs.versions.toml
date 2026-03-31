@@ -45,15 +45,15 @@ fabric-loader = { module = "net.fabricmc:fabric-loader", version.ref = "fabric-l
 sodium = { module = "maven.modrinth:sodium", version.ref = "sodium" }
 lithium = { module = "maven.modrinth:lithium", version.ref = "lithium" }
 iris = { module = "maven.modrinth:iris", version.ref = "iris" }
-baritone = { module = "meteordevelopment:baritone", version.ref = "baritone" }
+baritone = { module = "lfmdevelopment:baritone", version.ref = "baritone" }
 modmenu = { module = "com.terraformersmc:modmenu", version.ref = "modmenu" }
 viafabricplus = { module = "com.viaversion:viafabricplus", version.ref = "viafabricplus" }
 viafabricplus-api = { module = "com.viaversion:viafabricplus-api", version.ref = "viafabricplus" }
 
 # Libraries
-orbit = { module = "meteordevelopment:orbit", version.ref = "orbit" }
+orbit = { module = "lfmdevelopment:orbit", version.ref = "orbit" }
 starscript = { module = "org.meteordev:starscript", version.ref = "starscript" }
-discord-ipc = { module = "meteordevelopment:discord-ipc", version.ref = "discordipc" }
+discord-ipc = { module = "lfmdevelopment:discord-ipc", version.ref = "discordipc" }
 reflections = { module = "org.reflections:reflections", version.ref = "reflections" }
 netty-handler-proxy = { module = "io.netty:netty-handler-proxy", version.ref = "netty" }
 netty-codec-socks = { module = "io.netty:netty-codec-socks", version.ref = "netty" }

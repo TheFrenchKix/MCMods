@@ -2,7 +2,6 @@ package lfmdevelopment.lfmclient.systems.modules.macro.pathfinding;
 
 import net.minecraft.util.math.BlockPos;
 
-import java.util.Objects;
 
 public class PathNode implements Comparable<PathNode> {
     public final BlockPos pos;
@@ -37,3 +36,4 @@ public class PathNode implements Comparable<PathNode> {
         return pos.hashCode();
     }
 }
+

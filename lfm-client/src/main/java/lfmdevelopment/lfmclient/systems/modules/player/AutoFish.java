@@ -1,4 +1,4 @@
-/*
+﻿/*
  * This file is part of the lfm Client distribution (https://github.com/lfmDevelopment/lfm-client).
  * Copyright (c) lfm Development.
  */
@@ -201,3 +201,4 @@ public class AutoFish extends Module {
         return Math.max(1, delay);
     }
 }
+

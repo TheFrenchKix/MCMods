@@ -40,6 +40,7 @@ public class PathfinderMod implements ClientModInitializer {
     private KeyBinding settingsKey;
 
     @Override
+    @SuppressWarnings("deprecation")
     public void onInitializeClient() {
         applyLoadedConfig();
 

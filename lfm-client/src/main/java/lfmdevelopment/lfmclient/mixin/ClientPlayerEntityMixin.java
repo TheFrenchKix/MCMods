@@ -21,10 +21,8 @@ import net.minecraft.client.input.Input;
 import net.minecraft.client.network.AbstractClientPlayerEntity;
 import net.minecraft.client.network.ClientPlayerEntity;
 import net.minecraft.client.world.ClientWorld;
-import net.minecraft.entity.Entity;
 import net.minecraft.entity.JumpingMount;
 import net.minecraft.util.PlayerInput;
-import net.minecraft.util.hit.EntityHitResult;
 import net.minecraft.util.hit.HitResult;
 import org.objectweb.asm.Opcodes;
 import org.spongepowered.asm.mixin.Mixin;
@@ -157,3 +155,4 @@ public abstract class ClientPlayerEntityMixin extends AbstractClientPlayerEntity
         lfmClient.EVENT_BUS.post(SendMovementPacketsEvent.Post.get());
     }
 }
+

@@ -51,11 +51,36 @@ public class Fonts {
 
         lfmClient.LOG.info("Found {} font families.", FONT_FAMILIES.size());
 
-        DEFAULT_FONT_FAMILY = FontUtils.getBuiltinFontInfo(BUILTIN_FONTS[1]).family();
-        DEFAULT_FONT = getFamily(DEFAULT_FONT_FAMILY).get(FontInfo.Type.Regular);
+        DEFAULT_FONT = findDefaultFont();
+        DEFAULT_FONT_FAMILY = DEFAULT_FONT.info.family();
 
         Config config = Config.get();
         load(config != null ? config.font.get() : DEFAULT_FONT);
+    }
+
+    private static FontFace findDefaultFont() {
+        FontInfo preferredInfo = FontUtils.getBuiltinFontInfo(BUILTIN_FONTS[1]);
+        if (preferredInfo != null) {
+            FontFamily preferredFamily = getFamily(preferredInfo.family());
+            FontFace preferredFont = preferredFamily != null ? preferredFamily.get(FontInfo.Type.Regular) : null;
+            if (preferredFont != null) return preferredFont;
+        }
+
+        for (FontFamily family : FONT_FAMILIES) {
+            FontFace regular = family.get(FontInfo.Type.Regular);
+            if (regular != null) return regular;
+
+            FontFace bold = family.get(FontInfo.Type.Bold);
+            if (bold != null) return bold;
+
+            FontFace italic = family.get(FontInfo.Type.Italic);
+            if (italic != null) return italic;
+
+            FontFace boldItalic = family.get(FontInfo.Type.BoldItalic);
+            if (boldItalic != null) return boldItalic;
+        }
+
+        throw new IllegalStateException("No fonts could be loaded.");
     }
 
     public static void load(FontFace fontFace) {

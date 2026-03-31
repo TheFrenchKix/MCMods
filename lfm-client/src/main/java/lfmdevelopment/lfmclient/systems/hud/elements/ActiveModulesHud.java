@@ -264,6 +264,8 @@ public class ActiveModulesHud extends HudElement {
         Color color = flatColor.get();
 
         switch (colorMode.get()) {
+            case Flat -> {
+            }
             case Random -> color = module.color;
             case Rainbow -> {
                 rainbowHue2 += rainbowSpread.get();

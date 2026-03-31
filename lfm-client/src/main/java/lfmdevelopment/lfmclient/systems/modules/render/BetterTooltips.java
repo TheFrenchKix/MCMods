@@ -1,4 +1,4 @@
-/*
+﻿/*
  * This file is part of the lfm Client distribution (https://github.com/lfmDevelopment/lfm-client).
  * Copyright (c) lfm Development.
  */
@@ -272,7 +272,7 @@ public class BetterTooltips extends Module {
         if (foodInfo.get() && event.itemStack().contains(DataComponentTypes.FOOD)) {
             FoodComponent food = event.itemStack().get(DataComponentTypes.FOOD);
             // Those emojis really look like in-game hunger bar
-            event.appendStart(Text.literal(String.format("🍖 %d (💛 %.1f)", food.nutrition(), food.saturation())).formatted(Formatting.GRAY));
+            event.appendStart(Text.literal(String.format("ðŸ– %d (ðŸ’› %.1f)", food.nutrition(), food.saturation())).formatted(Formatting.GRAY));
         }
 
         // Item size tooltip
@@ -567,3 +567,4 @@ public class BetterTooltips extends Module {
         Dynamic,
     }
 }
+

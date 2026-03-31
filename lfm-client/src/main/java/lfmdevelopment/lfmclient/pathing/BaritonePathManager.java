@@ -1,4 +1,4 @@
-/*
+﻿/*
  * This file is part of the lfm Client distribution (https://github.com/lfmDevelopment/lfm-client).
  * Copyright (c) lfm Development.
  */
@@ -181,10 +181,12 @@ public class BaritonePathManager implements IPathManager {
             return String.format("GoalXZ{x=%s,z=%s}", SettingsUtil.maybeCensor(this.x), SettingsUtil.maybeCensor(this.z));
         }
 
+        @SuppressWarnings("unused")
         public int getX() {
             return this.x;
         }
 
+        @SuppressWarnings("unused")
         public int getZ() {
             return this.z;
         }
@@ -222,3 +224,4 @@ public class BaritonePathManager implements IPathManager {
         }
     }
 }
+

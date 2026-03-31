@@ -14,7 +14,6 @@ import lfmdevelopment.lfmclient.events.lfm.ActiveModulesChangedEvent;
 import lfmdevelopment.lfmclient.events.lfm.KeyEvent;
 import lfmdevelopment.lfmclient.events.lfm.ModuleBindChangedEvent;
 import lfmdevelopment.lfmclient.events.lfm.MouseClickEvent;
-import lfmdevelopment.lfmclient.pathing.BaritoneUtils;
 import lfmdevelopment.lfmclient.settings.Setting;
 import lfmdevelopment.lfmclient.settings.SettingGroup;
 import lfmdevelopment.lfmclient.systems.System;
@@ -444,3 +443,5 @@ public class Modules extends System<Modules> {
         add(new SoundBlocker());
     }
 }
+
+

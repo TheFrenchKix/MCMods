@@ -1,4 +1,4 @@
-package lfmdevelopment.lfmclient.systems.modules.macro;
+﻿package lfmdevelopment.lfmclient.systems.modules.macro;
 
 import lfmdevelopment.lfmclient.events.world.TickEvent;
 import lfmdevelopment.lfmclient.settings.*;
@@ -140,3 +140,4 @@ public class MacroRecorder extends Module {
         return currentMacro;
     }
 }
+

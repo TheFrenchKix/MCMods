@@ -272,6 +272,8 @@ public class DamageUtils {
             switch (mc.world.getDifficulty()) {
                 case EASY     -> damage = Math.min(damage / 2 + 1, damage);
                 case HARD     -> damage *= 1.5f;
+                case NORMAL, PEACEFUL -> {
+                }
             }
         }
 

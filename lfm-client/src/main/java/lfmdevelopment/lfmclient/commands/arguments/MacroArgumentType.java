@@ -45,7 +45,7 @@ public class MacroArgumentType implements ArgumentType<Macro> {
     }
 
     @Override
-    public CompletableFuture<Suggestions> listSuggestions(CommandContext context, SuggestionsBuilder builder) {
+    public <S> CompletableFuture<Suggestions> listSuggestions(CommandContext<S> context, SuggestionsBuilder builder) {
         return CommandSource.suggestMatching(Macros.get().getAll().stream().map(macro -> {
             String name = macro.name.get();
             if (name.contains(" ")) {

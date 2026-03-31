@@ -1,4 +1,4 @@
-/*
+﻿/*
  * This file is part of the lfm Client distribution (https://github.com/lfmDevelopment/lfm-client).
  * Copyright (c) lfm Development.
  */
@@ -407,3 +407,4 @@ public class Notifier extends Module {
         None, Joins, Leaves, Both
     }
 }
+

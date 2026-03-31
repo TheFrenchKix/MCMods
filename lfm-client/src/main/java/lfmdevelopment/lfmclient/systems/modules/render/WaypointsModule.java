@@ -1,4 +1,4 @@
-/*
+﻿/*
  * This file is part of the lfm Client distribution (https://github.com/lfmDevelopment/lfm-client).
  * Copyright (c) lfm Development.
  */
@@ -113,6 +113,8 @@ public class WaypointsModule extends Module {
             boolean waypointIsNear = waypoint.actionWhenNearCheck((int) Math.floor(dist));
             if (playerAlive && waypointIsNear) {
                 switch (waypoint.actionWhenNear.get()) {
+                    case Disabled -> {
+                    }
                     case Hide -> waypoint.visible.set(false);
                     case Delete -> {
                         toRemove.add(waypoint);
@@ -319,3 +321,4 @@ public class WaypointsModule extends Module {
         }
     }
 }
+

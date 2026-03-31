@@ -8,7 +8,6 @@ package lfmdevelopment.lfmclient.mixin;
 import com.llamalad7.mixinextras.sugar.Local;
 import com.llamalad7.mixinextras.sugar.Share;
 import com.llamalad7.mixinextras.sugar.ref.LocalBooleanRef;
-import com.llamalad7.mixinextras.sugar.ref.LocalFloatRef;
 import com.llamalad7.mixinextras.sugar.ref.LocalRef;
 import com.mojang.brigadier.exceptions.CommandSyntaxException;
 import lfmdevelopment.lfmclient.lfmClient;
@@ -22,7 +21,6 @@ import lfmdevelopment.lfmclient.events.packets.ContainerSlotUpdateEvent;
 import lfmdevelopment.lfmclient.events.packets.InventoryEvent;
 import lfmdevelopment.lfmclient.events.packets.PlaySoundPacketEvent;
 import lfmdevelopment.lfmclient.events.world.ChunkDataEvent;
-import lfmdevelopment.lfmclient.mixininterface.IExplosionS2CPacket;
 import lfmdevelopment.lfmclient.pathing.BaritoneUtils;
 import lfmdevelopment.lfmclient.systems.config.Config;
 import lfmdevelopment.lfmclient.systems.modules.Modules;
@@ -37,11 +35,9 @@ import net.minecraft.entity.Entity;
 import net.minecraft.entity.ItemEntity;
 import net.minecraft.network.ClientConnection;
 import net.minecraft.network.packet.s2c.play.*;
-import net.minecraft.util.math.Vec3d;
 import net.minecraft.world.chunk.WorldChunk;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.Shadow;
-import org.spongepowered.asm.mixin.Unique;
 import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
@@ -148,3 +144,4 @@ public abstract class ClientPlayNetworkHandlerMixin extends ClientCommonNetworkH
         }
     }
 }
+

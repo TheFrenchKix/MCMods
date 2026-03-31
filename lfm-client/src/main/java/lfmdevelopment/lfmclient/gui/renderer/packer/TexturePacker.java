@@ -8,6 +8,7 @@ package lfmdevelopment.lfmclient.gui.renderer.packer;
 import com.mojang.blaze3d.platform.TextureUtil;
 import com.mojang.blaze3d.textures.FilterMode;
 import com.mojang.blaze3d.textures.TextureFormat;
+import lfmdevelopment.lfmclient.lfmClient;
 import lfmdevelopment.lfmclient.renderer.Texture;
 import net.minecraft.util.Identifier;
 import org.lwjgl.BufferUtils;
@@ -32,9 +33,17 @@ public class TexturePacker {
     private final List<Image> images = new ArrayList<>();
 
     public GuiTexture add(Identifier id) {
+        GuiTexture texture = new GuiTexture();
+
+        var resource = mc.getResourceManager().getResource(id);
+        if (resource.isEmpty()) {
+            lfmClient.LOG.warn("Missing GUI texture resource: {}. Using fallback texture.", id);
+            addFallback(texture);
+            return texture;
+        }
+
         try {
-            InputStream in = mc.getResourceManager().getResource(id).get().getInputStream();
-            GuiTexture texture = new GuiTexture();
+            InputStream in = resource.get().getInputStream();
 
             try (MemoryStack stack = MemoryStack.stackPush()) {
                 ByteBuffer rawImageBuffer = null;
@@ -48,6 +57,11 @@ public class TexturePacker {
                     IntBuffer ignored = stack.mallocInt(1);
 
                     ByteBuffer imageBuffer = STBImage.stbi_load_from_memory(rawImageBuffer, w, h, ignored, 4);
+                    if (imageBuffer == null) {
+                        lfmClient.LOG.warn("Failed to decode GUI texture resource: {}. Using fallback texture.", id);
+                        addFallback(texture);
+                        return texture;
+                    }
 
                     int width = w.get(0);
                     int height = h.get(0);
@@ -61,7 +75,8 @@ public class TexturePacker {
                     if (width > 32) addResized(texture, imageBuffer, width, height, 32);
                     if (width > 48) addResized(texture, imageBuffer, width, height, 48);
                 } catch (IOException e) {
-                    e.printStackTrace();
+                    lfmClient.LOG.warn("Failed to read GUI texture resource: {}. Using fallback texture.", id, e);
+                    addFallback(texture);
                 } finally {
                     MemoryUtil.memFree(rawImageBuffer);
                 }
@@ -69,10 +84,24 @@ public class TexturePacker {
 
             return texture;
         } catch (IOException e) {
-            e.printStackTrace();
+            lfmClient.LOG.warn("Failed to open GUI texture resource: {}. Using fallback texture.", id, e);
+            addFallback(texture);
         }
 
-        return null;
+        return texture;
+    }
+
+    private void addFallback(GuiTexture texture) {
+        ByteBuffer imageBuffer = BufferUtils.createByteBuffer(4);
+        imageBuffer.put((byte) 0xFF);
+        imageBuffer.put((byte) 0xFF);
+        imageBuffer.put((byte) 0xFF);
+        imageBuffer.put((byte) 0xFF);
+        ((Buffer) imageBuffer).rewind();
+
+        TextureRegion region = new TextureRegion(1, 1);
+        texture.add(region);
+        images.add(new Image(imageBuffer, region, 1, 1, false));
     }
 
     private void addResized(GuiTexture texture, ByteBuffer srcImageBuffer, int srcWidth, int srcHeight, int width) {
