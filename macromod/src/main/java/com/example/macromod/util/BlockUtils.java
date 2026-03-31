@@ -133,15 +133,23 @@ public final class BlockUtils {
      * Uses an OUTLINE-shape raycast; returns true if the first hit is the target block or a miss.
      */
     public static boolean hasLineOfSight(ClientWorld world, Vec3d eyePos, BlockPos targetPos) {
-        Vec3d targetCenter = Vec3d.ofCenter(targetPos);
-        RaycastContext ctx = new RaycastContext(
-                eyePos, targetCenter,
-                RaycastContext.ShapeType.OUTLINE,
-                RaycastContext.FluidHandling.NONE,
-                (net.minecraft.entity.Entity) null
-        );
-        BlockHitResult result = world.raycast(ctx);
-        return result.getBlockPos().equals(targetPos)
-                || result.getType() == HitResult.Type.MISS;
+        if (world == null || eyePos == null || targetPos == null) {
+            return true; // Can't check, assume visible
+        }
+        try {
+            Vec3d targetCenter = Vec3d.ofCenter(targetPos);
+            RaycastContext ctx = new RaycastContext(
+                    eyePos, targetCenter,
+                    RaycastContext.ShapeType.OUTLINE,
+                    RaycastContext.FluidHandling.NONE,
+                    (net.minecraft.entity.Entity) null
+            );
+            BlockHitResult result = world.raycast(ctx);
+            return result.getBlockPos().equals(targetPos)
+                    || result.getType() == HitResult.Type.MISS;
+        } catch (Exception e) {
+            // Fallback on any error during raycast
+            return true;
+        }
     }
 }

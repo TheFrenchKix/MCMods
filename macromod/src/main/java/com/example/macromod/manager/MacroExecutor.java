@@ -82,6 +82,11 @@ public class MacroExecutor {
     private BlockPos miningAimTargetPos       = null;
     private long    miningAimRefreshMs        = 0L;
     private long    miningAimRefreshInterval  = 500L;
+    // Mining pathfinding: navigate to distant/unreachable blocks
+    private BlockPos miningTargetBlock        = null;
+    private List<BlockPos> miningPath         = null;
+    private int miningPathIndex               = 0;
+    private long miningPathfindingStart       = -1L;
 
     // ─── Attack ─────────────────────────────────────────────────
     private long lastAttackMs = 0L;
@@ -546,26 +551,19 @@ public class MacroExecutor {
                 }
             }
 
-            // Check reach
+            // Check reach: if >3 blocks away, use pathfinding to get closer
             Vec3d eyePos = player.getEyePos();
+            double distSquaredTo = BlockUtils.distanceSquaredTo(eyePos, target.getPos());
             double reachDist = player.getBlockInteractionRange();
-            if (!BlockUtils.isWithinReach(eyePos, target.getPos(), reachDist)) {
-                // Too far — skip for now
-                movementHelper.forwardToBlock(player, target.getPos());
-                target.setSkipped(true);
-                blocksSkippedTotal++;
-                currentBlockTargetIndex++;
-                isMiningBlock = false;
-                continue;
+            if (distSquaredTo > 9) { // 3 blocks squared (~1.7 distance)
+                // Far block — navigate using pathfinding
+                tickMiningPathfinding(player, world, target.getPos());
+                return;
             }
-
-            // LOS check: skip blocks hidden behind other blocks
-            if (!BlockUtils.hasLineOfSight(world, player.getEyePos(), target.getPos())) {
-                target.setSkipped(true);
-                blocksSkippedTotal++;
-                currentBlockTargetIndex++;
-                isMiningBlock = false;
-                continue;
+            if (!BlockUtils.isWithinReach(eyePos, target.getPos(), reachDist)) {
+                // Just barely out of reach — navigate using pathfinding
+                tickMiningPathfinding(player, world, target.getPos());
+                return;
             }
 
             // ── Anti-cheat: randomise aim point within the closest block face ──
@@ -612,10 +610,14 @@ public class MacroExecutor {
                 if (BlockUtils.isAir(world, target.getPos())) {
                     target.setMined(true);
                     blocksMinedTotal++;
-                    currentBlockTargetIndex++;
                     isMiningBlock = false;
                     miningAimPoint = null; // force re-randomise on next block
                     miningDelayEndMs = System.currentTimeMillis() + currentMacro.getConfig().getMiningDelay();
+                    
+                    // Rescan around the destroyed block for similar blocks
+                    rescanAroundBlock(target.getPos(), world, getCurrentStep());
+                    
+                    currentBlockTargetIndex++;
                 }
 
                 // Stuck mining timeout (5 seconds)
@@ -632,6 +634,92 @@ public class MacroExecutor {
 
         // All targets processed
         advanceToNextStep();
+    }
+
+    /**
+     * Navigates to a distant or unreachable mining target using pathfinding.
+     * Once within reach, resumes normal mining logic.
+     */
+    private void tickMiningPathfinding(ClientPlayerEntity player, ClientWorld world, BlockPos targetBlock) {
+        // If target changed, restart pathfinding
+        if (!targetBlock.equals(miningTargetBlock)) {
+            miningTargetBlock = targetBlock;
+            miningPath = null;
+            miningPathIndex = 0;
+            miningPathfindingStart = System.currentTimeMillis();
+        }
+
+        // Pathfinding timeout (10 seconds to find path to mining block)
+        if (System.currentTimeMillis() - miningPathfindingStart > 10000) {
+            LOGGER.warn("Mining pathfinding timeout to block {}, giving up", targetBlock);
+            miningTargetBlock = null;
+            miningPath = null;
+            // Continue with normal mining (will try forwardToBlock next tick or nearby alternative)
+            return;
+        }
+
+        // Check if already within reach — resume mining
+        Vec3d eyePos = player.getEyePos();
+        double distSquaredTo = BlockUtils.distanceSquaredTo(eyePos, targetBlock);
+        double reachDist = player.getBlockInteractionRange();
+        if (distSquaredTo <= 9 && BlockUtils.isWithinReach(eyePos, targetBlock, reachDist)) {
+            miningTargetBlock = null;
+            miningPath = null;
+            return; // Resume mining in next tick
+        }
+
+        // Compute path if not cached
+        if (miningPath == null) {
+            if (!BlockUtils.isChunkLoaded(world, targetBlock)) {
+                // Chunk not loaded; wait for it
+                return;
+            }
+
+            PathHandler pathHandler = MacroModClient.getPathHandler();
+            if (pathHandler != null) {
+                List<BaseBlockPos> sp = pathHandler.findPath(
+                    new BaseBlockPos(player.getBlockPos().getX(), player.getBlockPos().getY(), player.getBlockPos().getZ()),
+                    new ExactGoal(new BaseBlockPos(targetBlock.getX(), targetBlock.getY(), targetBlock.getZ())),
+                    3000L // 3-second timeout for mining pathfinding
+                );
+                miningPath = toBlockPosPath(sp);
+            }
+            if (miningPath == null || miningPath.isEmpty()) {
+                miningPath = fallbackPathFinder.findPath(player.getBlockPos(), targetBlock, world);
+            }
+            if (miningPath == null || miningPath.isEmpty()) {
+                LOGGER.warn("No path to mining block {}", targetBlock);
+                miningTargetBlock = null;
+                miningPath = null;
+                return;
+            }
+            miningPathIndex = 0;
+            moveStartMs = System.currentTimeMillis();
+            stuckSince = -1L;
+            lastPosition = player.getPos();
+            movementHelper.resetJumpState();
+        }
+
+        // Follow the path to the mining target
+        if (miningPath != null && miningPathIndex < miningPath.size()) {
+            BlockPos nextWaypoint = miningPath.get(miningPathIndex);
+
+            // Check if reached waypoint
+            if (movementHelper.hasReachedWaypoint(player, nextWaypoint)) {
+                miningPathIndex++;
+                if (miningPathIndex >= miningPath.size()) {
+                    // Reached target block
+                    movementHelper.releaseAllInputs();
+                    miningTargetBlock = null;
+                    miningPath = null;
+                    return;
+                }
+                nextWaypoint = miningPath.get(miningPathIndex);
+            }
+
+            // Move toward next waypoint
+            movementHelper.moveTowards(player, nextWaypoint);
+        }
     }
 
     private void tickNextStep() {
@@ -731,8 +819,44 @@ public class MacroExecutor {
      * <p>Blocks that aren't in reach when the player arrives are still added;
      * {@code tickMining} will call {@code forwardToBlock} to close the gap.</p>
      */
+    /**
+     * Rescan the area around a destroyed block to find similar blocks nearby.
+     */
+    private void rescanAroundBlock(BlockPos destroyedAt, ClientWorld world, MacroStep step) {
+        if (step == null) return;
+        int rescanRadius = 5; // Rescan 5 blocks around destroyed block
+        
+        java.util.Set<String> wantedIds = new HashSet<>();
+        for (BlockTarget t : step.getTargets()) {
+            wantedIds.add(t.getBlockId());
+        }
+        if (wantedIds.isEmpty()) return;
+        
+        java.util.Set<BlockPos> knownPositions = new HashSet<>();
+        for (BlockTarget t : step.getTargets()) {
+            knownPositions.add(t.getPos());
+        }
+        
+        int added = 0;
+        for (int dx = -rescanRadius; dx <= rescanRadius; dx++) {
+            for (int dy = -rescanRadius; dy <= rescanRadius; dy++) {
+                for (int dz = -rescanRadius; dz <= rescanRadius; dz++) {
+                    BlockPos candidate = destroyedAt.add(dx, dy, dz);
+                    if (knownPositions.contains(candidate)) continue;
+                    if (BlockUtils.isAir(world, candidate)) continue;
+                    String id = BlockUtils.getBlockId(world, candidate);
+                    if (wantedIds.contains(id)) {
+                        step.addTarget(new BlockTarget(candidate, id));
+                        knownPositions.add(candidate);
+                        added++;
+                    }
+                }
+            }
+        }
+    }
+
     private void scanRadiusTargets(MacroStep step, ClientWorld world) {
-        int radius = step.getRadius();
+        int radius = Math.max(step.getRadius(), 20); // Use radius 20 as minimum
         if (radius <= 0) return;
 
         // Collect the block IDs we are looking for (from explicitly listed targets)
@@ -777,6 +901,10 @@ public class MacroExecutor {
     private void advanceToNextStep() {
         currentStepIndex++;
         radiusScanDone = false;
+        // Clear mining pathfinding state when advancing
+        miningTargetBlock = null;
+        miningPath = null;
+        miningPathIndex = 0;
 
         if (currentStepIndex >= currentMacro.getSteps().size()) {
             if (currentMacro.getConfig().isLoop()) {

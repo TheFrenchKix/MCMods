@@ -63,6 +63,8 @@
   "macromod.hud.last_added": "Dernier ajout : %s",
   "macromod.hud.keybinds_title": "Touches",
 
+  "macromod.auto_fishing.no_rod": "Aucune canne à pêche en main !",
+
   "macromod.chat.macro_list": "=== Macros ===",
   "macromod.chat.macro_entry": " - %s (ID : %s, %d étapes)",
   "macromod.chat.no_macros": "Aucune macro trouvée.",

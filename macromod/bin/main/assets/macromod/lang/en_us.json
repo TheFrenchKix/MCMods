@@ -63,6 +63,8 @@
   "macromod.hud.last_added": "Last added: %s",
   "macromod.hud.keybinds_title": "Keybinds",
 
+  "macromod.auto_fishing.no_rod": "No fishing rod in hand!",
+
   "macromod.chat.macro_list": "=== Macros ===",
   "macromod.chat.macro_entry": " - %s (ID: %s, %d steps)",
   "macromod.chat.no_macros": "No macros found.",

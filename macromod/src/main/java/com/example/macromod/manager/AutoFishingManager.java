@@ -8,6 +8,8 @@ import net.minecraft.entity.Entity;
 import net.minecraft.entity.LivingEntity;
 import net.minecraft.entity.projectile.FishingBobberEntity;
 import net.minecraft.item.FishingRodItem;
+import net.minecraft.text.Text;
+import net.minecraft.util.Formatting;
 import net.minecraft.util.Hand;
 import net.minecraft.util.hit.HitResult;
 import net.minecraft.util.math.Box;
@@ -99,6 +101,8 @@ public class AutoFishingManager {
             killTarget = null;
         }
     }
+
+    public void setDisable() { setEnabled(false); }
 
     public boolean isEnabled() { return enabled; }
 
@@ -309,6 +313,8 @@ public class AutoFishingManager {
                 return true;
             }
         }
+        sendMessage("macromod.auto_fishing.no_rod", Formatting.RED);
+        setDisable();
         return false;
     }
 
@@ -416,6 +422,13 @@ public class AutoFishingManager {
                 + Math.signum(dyaw)   * Math.min(AIM_STEP_DEG, Math.abs(dyaw)));
         player.setPitch(player.getPitch()
                 + Math.signum(dpitch) * Math.min(AIM_STEP_DEG, Math.abs(dpitch)));
+    }
+
+    private void sendMessage(String key, Formatting color, Object... args) {
+        MinecraftClient client = MinecraftClient.getInstance();
+        if (client.player != null) {
+            client.player.sendMessage(Text.translatable(key, args).formatted(color), false);
+        }
     }
 
     private static float wrapDeg(float d) {
