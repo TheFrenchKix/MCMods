@@ -73,7 +73,7 @@ public class MacroRecorder {
         lastAddedInfo = "Waypoint: " + stepLabel;
 
         sendMessage("macromod.chat.waypoint_added", Formatting.YELLOW, pos.getX(), pos.getY(), pos.getZ());
-        LOGGER.debug("Added waypoint '{}' at {}", stepLabel, pos);
+        LOGGER.info("Added waypoint '{}' at {}", stepLabel, pos);
     }
 
     /**
@@ -111,7 +111,7 @@ public class MacroRecorder {
         lastAddedInfo = blockId;
 
         sendMessage("macromod.chat.block_added", Formatting.AQUA, blockId, pos.getX(), pos.getY(), pos.getZ());
-        LOGGER.debug("Added block target {} at {}", blockId, pos);
+        LOGGER.info("Added block target {} at {}", blockId, pos);
     }
 
     /**

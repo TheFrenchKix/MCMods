@@ -189,6 +189,22 @@ public class BlockUtils {
 
 
     /**
+     * @param block the block
+     * @return whether the given block is a tree leaf
+     */
+    public static boolean isLeaf(BlockWrapper block) {
+        return block.getName().contains("leaves");
+    }
+
+    /**
+     * @param pos the position
+     * @return whether the block at the given position is a tree leaf
+     */
+    public static boolean isLeaf(BaseBlockPos pos) {
+        return isLeaf(blockProvider.getBlockAt(pos));
+    }
+
+    /**
      * @param pos the position
      * @return whether the player can walk through the block at the given position. This does not check the surrounding blocks.
      */
@@ -204,7 +220,7 @@ public class BlockUtils {
     public static boolean canWalkThrough(BlockWrapper block, BaseBlockPos pos) {
         if (isLiquid(block) || WATERLILY == block.getId() || isDangerous(block)
                 || ICE == block.getId() || FROSTED_ICE == block.getId() || PACKED_ICE == block.getId()
-                || isDoorLike(block)) {
+                || isDoorLike(block) || isLeaf(block)) {
             return false;
         } else {
             return minecraftAdapter.isBlockPassable(block, pos);

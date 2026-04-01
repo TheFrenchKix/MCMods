@@ -68,6 +68,10 @@ public class MacroEditScreen extends Screen {
     private final List<String> editAttackWhitelist = new ArrayList<>();
     private int     editAttackRange        = 10;
 
+    // ── Pathfinder options ──────────────────────────────────────
+    private boolean editOnlyGround = false;
+    private boolean editLockCrosshair = false;
+
     // Entity list state (refreshed each render when whitelist visible)
     private final List<String> nearbyEntityTypes = new ArrayList<>();
     private int     entityListScroll        = 0;
@@ -91,8 +95,8 @@ public class MacroEditScreen extends Screen {
     private TextFieldWidget descriptionField;
 
     // ── Hit areas ──────────────────────────────────────────────
-    /** chipBounds[i] = {x, y, w}  –  Loop / SkipMismatch / StopOnDanger */
-    private final int[][] chipBounds   = new int[3][3];
+    /** chipBounds[i] = {x, y, w}  –  Loop / SkipMismatch / StopOnDanger / OnlyGround / LockCamera */
+    private final int[][] chipBounds   = new int[5][3];
     /** cyclerBounds[i] = {leftBtnX, rightBtnX, y}  –  Delay / Timeout / Radius */
     private final int[][] cyclerBounds = new int[3][3];
     /** attackChipBounds[0]=attack toggle, [1]=mode chip */
@@ -119,6 +123,8 @@ public class MacroEditScreen extends Screen {
         editLoop         = cfg.isLoop();
         editSkipMismatch = cfg.isSkipMismatch();
         editStopOnDanger = cfg.isStopOnDanger();
+        editOnlyGround   = cfg.isOnlyGround();
+        editLockCrosshair = cfg.isLockCrosshair();
         editMiningDelay  = cfg.getMiningDelay();
         editMoveTimeout  = cfg.getMoveTimeout();
         editArrivalRadius = cfg.getArrivalRadius();
@@ -226,7 +232,9 @@ public class MacroEditScreen extends Screen {
 
         dy = renderChip(ctx, mx, my, x, dy, "Loop",           editLoop,         false, 0) + 5;
         dy = renderChip(ctx, mx, my, x, dy, "Skip Mismatch",  editSkipMismatch, false, 1) + 5;
-        dy = renderChip(ctx, mx, my, x, dy, "Stop On Danger", editStopOnDanger, true,  2) + 8;
+        dy = renderChip(ctx, mx, my, x, dy, "Stop On Danger", editStopOnDanger, true,  2) + 5;
+        dy = renderChip(ctx, mx, my, x, dy, "Only Ground",    editOnlyGround,   false, 3) + 5;
+        dy = renderChip(ctx, mx, my, x, dy, "Lock Crosshair", editLockCrosshair, false, 4) + 8;
 
         // Numeric section
         ctx.fill(x, dy, panelX + LEFT_W - 10, dy + 1, C_DIVIDER);
@@ -504,13 +512,15 @@ public class MacroEditScreen extends Screen {
         }
 
         // Bool chips
-        for (int i = 0; i < 3; i++) {
+        for (int i = 0; i < 5; i++) {
             int cx = chipBounds[i][0], cy = chipBounds[i][1], cw = chipBounds[i][2];
             if (cw > 0 && imx >= cx && imx < cx + cw && imy >= cy && imy < cy + 16) {
                 switch (i) {
                     case 0 -> editLoop         = !editLoop;
                     case 1 -> editSkipMismatch = !editSkipMismatch;
                     case 2 -> editStopOnDanger = !editStopOnDanger;
+                    case 3 -> editOnlyGround   = !editOnlyGround;
+                    case 4 -> editLockCrosshair = !editLockCrosshair;
                 }
                 return true;
             }
@@ -671,6 +681,8 @@ public class MacroEditScreen extends Screen {
         cfg.setLoop(editLoop);
         cfg.setSkipMismatch(editSkipMismatch);
         cfg.setStopOnDanger(editStopOnDanger);
+        cfg.setOnlyGround(editOnlyGround);
+        cfg.setLockCrosshair(editLockCrosshair);
         cfg.setMiningDelay(editMiningDelay);
         cfg.setMoveTimeout(editMoveTimeout);
         cfg.setArrivalRadius(editArrivalRadius);

@@ -42,6 +42,12 @@ public class MacroConfig {
     /** Radius in blocks to scan for entities to attack (2–50). */
     private int attackRange = 10;
 
+    /** Whether pathfinding should avoid jumping (only ground-level traversal). */
+    private boolean onlyGround = false;
+
+    /** Whether to keep crosshair locked on target while allowing camera movement. */
+    private boolean lockCrosshair = false;
+
     public MacroConfig() {
         this.loop = false;
         this.skipMismatch = true;
@@ -131,6 +137,22 @@ public class MacroConfig {
         this.attackRange = Math.max(2, Math.min(50, attackRange));
     }
 
+    public boolean isOnlyGround() {
+        return onlyGround;
+    }
+
+    public void setOnlyGround(boolean onlyGround) {
+        this.onlyGround = onlyGround;
+    }
+
+    public boolean isLockCrosshair() {
+        return lockCrosshair;
+    }
+
+    public void setLockCrosshair(boolean lockCrosshair) {
+        this.lockCrosshair = lockCrosshair;
+    }
+
     /**
      * Creates a copy of this config.
      */
@@ -146,6 +168,8 @@ public class MacroConfig {
         copy.attackWhitelistOnly = attackWhitelistOnly;
         copy.attackWhitelist = new ArrayList<>(attackWhitelist);
         copy.attackRange = attackRange;
+        copy.onlyGround = onlyGround;
+        copy.lockCrosshair = lockCrosshair;
         return copy;
     }
 }

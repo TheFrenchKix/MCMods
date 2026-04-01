@@ -42,9 +42,14 @@ public class PathFinder {
     };
 
     private int maxNodes = 5000;
+    private boolean onlyGround = false;
 
     public void setMaxNodes(int maxNodes) {
         this.maxNodes = maxNodes;
+    }
+
+    public void setOnlyGround(boolean onlyGround) {
+        this.onlyGround = onlyGround;
     }
 
     // ═══════════════════════════════════════════════════════════════
@@ -128,6 +133,11 @@ public class PathFinder {
      * <p>Diagonal moves additionally enforce corner-cutting prevention:
      * both orthogonal axis intermediates must be passable on the player's
      * column before the diagonal is accepted.</p>
+     * 
+     * <p>Height limits prevent unrealistic vertical climbing:
+     * - No position can be more than MAX_HEIGHT_ABOVE_START above the path start
+     * - Step-up (+1) is only allowed if flat position isn't valid (prevents stacking)
+     * - Step-up has high cost penalty to discourage unnecessary climbing</p>
      */
     private List<Move> getNeighbors(BlockPos pos, ClientWorld world) {
         List<Move> moves = new ArrayList<>(16);
@@ -143,21 +153,37 @@ public class PathFinder {
             // passable at the player's current level and one above.
             if (isDiag && !diagonalClear(pos, dx, dz, world)) continue;
 
-            // ── Try three vertical variants ───────────────────────
+            // ── Try vertical variants ─────────────────────────────
             BlockPos flat = pos.add(dx, 0,  dz);
             BlockPos up   = pos.add(dx, 1,  dz);
-            BlockPos down = pos.add(dx, -1, dz);
 
+            // Check if flat position is valid
             if (canStandAt(flat, world)) {
                 moves.add(new Move(flat, baseCost));
-            } else if (canStandAt(up, world) && BlockUtils.isPassable(world, pos.up())) {
+            } 
+            // Only allow step-up if flat is SOLID ground and up is valid
+            // This prevents stepping through leaves or air (no block placement/flying)
+            // Skip if onlyGround mode is enabled
+            else if (!onlyGround && BlockUtils.isSolid(world, flat) && canStandAt(up, world) && BlockUtils.isPassable(world, pos.up())) {
                 // Step up: only 1 block; headroom at current pos must be clear
+                // Must step UP ONTO solid ground (not empty space or leaves)
                 // Diagonal step-up: both intermediate columns must also clear at y+1
+                double stepUpCost = baseCost + 0.8; // significant cost penalty for stepping up
                 if (!isDiag || diagonalClear(pos.up(), dx, dz, world)) {
-                    moves.add(new Move(up, baseCost + 0.5)); // slight extra cost for step
+                    moves.add(new Move(up, stepUpCost));
                 }
-            } else if (canStandAt(down, world)) {
-                moves.add(new Move(down, baseCost));
+            } 
+            
+            // ── Try stepping down (support multiple descent levels) ────
+            // Check up to 3 blocks down for paths through lower openings
+            for (int downStep = 1; downStep <= 3; downStep++) {
+                BlockPos down = pos.add(dx, -downStep, dz);
+                if (canStandAt(down, world)) {
+                    // Cost increases with depth to prefer shallower descents
+                    double downCost = baseCost + (downStep * 0.1);
+                    moves.add(new Move(down, downCost));
+                    break; // Found ground, no need to check deeper
+                }
             }
         }
 

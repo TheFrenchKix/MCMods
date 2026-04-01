@@ -80,7 +80,7 @@ public class MacroManager {
             try (Writer writer = Files.newBufferedWriter(filePath)) {
                 writer.write(JsonUtils.toJson(macro));
             }
-            LOGGER.debug("Saved macro '{}' to {}", macro.getName(), filePath.getFileName());
+            LOGGER.info("Saved macro '{}' to {}", macro.getName(), filePath.getFileName());
         } catch (IOException e) {
             LOGGER.error("Failed to save macro '{}'", macro.getName(), e);
         }

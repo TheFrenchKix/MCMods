@@ -13,6 +13,7 @@ import com.example.macromod.ui.HudOverlay;
 import com.example.macromod.ui.KeybindHudOverlay;
 import com.example.macromod.ui.MacroScreen;
 import com.example.macromod.ui.PathDebugRenderer;
+
 import net.fabricmc.api.ClientModInitializer;
 import net.fabricmc.api.EnvType;
 import net.fabricmc.api.Environment;
@@ -55,8 +56,9 @@ public class MacroModClient implements ClientModInitializer {
     private static KeyBinding addBlockBreakKey;
     private static KeyBinding toggleRecordingKey;
     private static KeyBinding stopMacroKey;
-    private static KeyBinding freelookToggleKey;
     private static KeyBinding toggleKeybindHudKey;
+
+    // ─── Initialization ───────────────────────────────────────────
 
     @Override
     public void onInitializeClient() {
@@ -136,13 +138,6 @@ public class MacroModClient implements ClientModInitializer {
                 "key.macromod.stop_macro",
                 InputUtil.Type.KEYSYM,
                 GLFW.GLFW_KEY_PERIOD,
-                "category.macromod.general"
-        ));
-
-        freelookToggleKey = KeyBindingHelper.registerKeyBinding(new KeyBinding(
-                "key.macromod.toggle_freelook",
-                InputUtil.Type.KEYSYM,
-                GLFW.GLFW_KEY_F,
                 "category.macromod.general"
         ));
 
@@ -237,13 +232,6 @@ public class MacroModClient implements ClientModInitializer {
         while (stopMacroKey.wasPressed()) {
             if (macroExecutor.isRunning()) {
                 macroExecutor.stop();
-            }
-        }
-
-        // Freelook toggle (while executing)
-        while (freelookToggleKey.wasPressed()) {
-            if (macroExecutor.isRunning()) {
-                stevebotApi.toggleFreelook();
             }
         }
 

@@ -31,4 +31,5 @@ public abstract class ClientPlayerEntityMixin {
             // Additional movement logic can be added here if needed.
         }
     }
+    
 }

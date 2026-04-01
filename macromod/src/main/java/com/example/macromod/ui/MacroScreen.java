@@ -88,7 +88,7 @@ public class MacroScreen extends Screen {
     private int actY;
 
     // Config chip hit areas for the selected macro detail panel [idx][x, y, w]
-    private final int[][] chipDetailBounds = new int[3][3];
+    private final int[][] chipDetailBounds = new int[5][3];
 
     // ─────────────────────────────────────────────────────────────────
     public MacroScreen() {
@@ -254,7 +254,9 @@ public class MacroScreen extends Screen {
         int cx = dx;
         cx = chip(ctx, mx, my, cx, dy, "Loop",         m.getConfig().isLoop(),         false, 0) + 4;
         cx = chip(ctx, mx, my, cx, dy, "SkipMismatch", m.getConfig().isSkipMismatch(), false, 1) + 4;
-             chip(ctx, mx, my, cx, dy, "StopOnDanger", m.getConfig().isStopOnDanger(), true,  2);
+        cx = chip(ctx, mx, my, cx, dy, "StopOnDanger", m.getConfig().isStopOnDanger(), true,  2) + 4;
+        cx = chip(ctx, mx, my, cx, dy, "OnlyGround", m.getConfig().isOnlyGround(), false, 3) + 4;
+             chip(ctx, mx, my, cx, dy, "Lock Crosshair", m.getConfig().isLockCrosshair(), false, 4);
         dy += 20;
 
         // Divider
@@ -370,13 +372,15 @@ public class MacroScreen extends Screen {
         // Config chip toggles on the detail panel
         if (selectedMacro != null) {
             MacroConfig cfg = selectedMacro.getConfig();
-            for (int i = 0; i < 3; i++) {
+            for (int i = 0; i < 5; i++) {
                 int cx = chipDetailBounds[i][0], cy = chipDetailBounds[i][1], cw = chipDetailBounds[i][2];
                 if (cw > 0 && imx >= cx && imx < cx + cw && imy >= cy && imy < cy + 14) {
                     switch (i) {
                         case 0 -> cfg.setLoop(!cfg.isLoop());
                         case 1 -> cfg.setSkipMismatch(!cfg.isSkipMismatch());
                         case 2 -> cfg.setStopOnDanger(!cfg.isStopOnDanger());
+                        case 3 -> cfg.setOnlyGround(!cfg.isOnlyGround());
+                        case 4 -> cfg.setLockCrosshair(!cfg.isLockCrosshair());
                     }
                     MacroModClient.getManager().save(selectedMacro);
                     return true;

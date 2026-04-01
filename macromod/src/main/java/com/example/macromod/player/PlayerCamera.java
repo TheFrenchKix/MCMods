@@ -1,7 +1,6 @@
 package com.example.macromod.player;
 
 import com.example.macromod.data.blockpos.BaseBlockPos;
-import com.example.macromod.math.MathUtils;
 import com.example.macromod.math.vectors.vec2.Vector2d;
 import com.example.macromod.math.vectors.vec2.Vector2f;
 import com.example.macromod.math.vectors.vec3.Vector3d;
@@ -10,111 +9,25 @@ import com.example.macromod.misc.Direction;
 
 public class PlayerCamera {
 
-
     public enum CameraState {
         LOCKED,
         FREELOOK,
         DEFAULT
     }
 
-
-
-
     private CameraState state = CameraState.DEFAULT;
-    private boolean isFreelook = false;
     private CameraState preForcedState = state;
     private final Vector2f lastFreeView = new Vector2f();
     private final MinecraftAdapter minecraftAdapter;
-
-    private float cameraYaw = 0;
-    private float cameraPitch = 0;
-    private float playerYaw = 0;
-    private float playerPitch = 0;
-    private float originalYaw = 0;
-    private float originalPitch = 0;
-
 
     public PlayerCamera(MinecraftAdapter minecraftAdapter) {
         this.minecraftAdapter = minecraftAdapter;
         this.minecraftAdapter.setMouseChangeInterceptor(() -> getState() != CameraState.LOCKED);
     }
 
-    /**
-     * Updates this camera
-     *
-     * @param isTickStart whether this update is at the start or end of the tick event
-     */
-    public void onRenderTickEvent(boolean isTickStart) {
-        if (!minecraftAdapter.hasPlayer()) {
-            return;
-        }
-        if (getState() == CameraState.FREELOOK && !isFreelook) {
-            startFreelook();
-        }
-        if (getState() == CameraState.FREELOOK && isFreelook) {
-            updateFreelook(isTickStart);
-        }
-        if (getState() != CameraState.FREELOOK && isFreelook) {
-            stopFreelook();
-        }
-    }
-
 
     /**
-     * Starts the {@code CameraState.FREELOOK}-mode
-     */
-    private void startFreelook() {
-        playerYaw = minecraftAdapter.getPlayerRotationYaw();
-        playerPitch = minecraftAdapter.getPlayerRotationPitch();
-        originalYaw = playerYaw;
-        originalPitch = playerPitch;
-        cameraYaw = playerYaw;
-        cameraPitch = playerPitch;
-        isFreelook = true;
-    }
-
-
-    /**
-     * Stops the {@code CameraState.FREELOOK}-mode
-     */
-    private void stopFreelook() {
-        cameraYaw = originalYaw;
-        cameraPitch = originalPitch;
-        playerYaw = originalYaw;
-        playerPitch = originalPitch;
-        isFreelook = false;
-    }
-
-
-    /**
-     * Update the camera in the {@code CameraState.FREELOOK}-mode
-     */
-    private void updateFreelook(boolean isTickStart) {
-
-        final float f = minecraftAdapter.getMouseSensitivity() * 0.6f + 0.2f;
-        final float f1 = f * f * f * 8f;
-
-        final double dx = minecraftAdapter.getMouseDX() * f1 * 0.15;
-        final double dy = -minecraftAdapter.getMouseDY() * f1 * 0.15;
-
-        cameraYaw += dx;
-        cameraPitch += dy;
-        cameraPitch = MathUtils.clamp(cameraPitch, -90f, 90f);
-
-        if (isTickStart) {
-            minecraftAdapter.setCameraRotation(cameraYaw, cameraPitch);
-            lastFreeView.set(playerYaw, playerPitch);
-
-        } else {
-            minecraftAdapter.setCameraRotation(-(cameraYaw + playerYaw), -(cameraPitch + playerPitch));
-            lastFreeView.set(playerYaw, playerPitch);
-        }
-
-    }
-
-
-    /**
-     * Sets the state of the player-camera
+     * Sets the state of the player-camera and syncs the camera rotation to the player rotation if switching to free-look mode.
      *
      * @param state the new state of the camera
      */
@@ -283,10 +196,14 @@ public class PlayerCamera {
 
     /**
      * Forces the camera to look in specific directions, event when freelook is enabled.
+     * Does NOT lock camera if freelook is currently enabled (to allow user camera control).
      */
     public void enableForceCamera() {
         preForcedState = getState();
-        setState(CameraState.LOCKED);
+        // Don't lock camera if user has freelook enabled - they should keep control
+        if (getState() != CameraState.FREELOOK) {
+            setState(CameraState.LOCKED);
+        }
     }
 
 
@@ -308,6 +225,15 @@ public class PlayerCamera {
      */
     public boolean isForceEnabled() {
         return getState() == CameraState.LOCKED;
+    }
+
+    /**
+     * Check if the camera should be allowed to move.
+     * Used by lock-camera feature to completely disable camera movement during macro.
+     */
+    public boolean canRotateCamera() {
+        // Allow rotation when freelook is enabled or when not in locked state
+        return getState() == CameraState.FREELOOK || getState() != CameraState.LOCKED;
     }
 
 }

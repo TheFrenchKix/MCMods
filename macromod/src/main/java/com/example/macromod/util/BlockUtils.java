@@ -55,10 +55,26 @@ public final class BlockUtils {
 
     /**
      * Returns true if the block is passable (air, flowers, grass, etc.).
+     * Tree leaves are treated as non-traversable for pathfinding purposes.
      */
     public static boolean isPassable(ClientWorld world, BlockPos pos) {
         BlockState state = world.getBlockState(pos);
+        
+        // Treat tree leaves as solid blocks (non-passable)
+        if (isTreeLeaves(state)) {
+            return false;
+        }
+        
         return !state.isSolidBlock(world, pos) && state.getFluidState().isEmpty();
+    }
+
+    /**
+     * Returns true if the block is a tree leaves block.
+     */
+    private static boolean isTreeLeaves(BlockState state) {
+        String blockId = Registries.BLOCK.getId(state.getBlock()).toString();
+        // Match oak, birch, spruce, jungle, acacia, dark oak, mangrove, cherry, pale oak leaves, etc.
+        return blockId.endsWith("leaves");
     }
 
     /**

@@ -171,6 +171,7 @@ public class MacroExecutor {
         precomputeFromPos = startClient.player != null ? startClient.player.getBlockPos() : null;
         precomputeIndex = 0;
         state = MacroState.PRECOMPUTING;
+        
         LOGGER.info("Starting macro '{}' (loop={})", macro.getName(), macro.getConfig().isLoop());
 
         if (currentMacro.getConfig().isLoop()) {
@@ -295,7 +296,7 @@ public class MacroExecutor {
 
         if (!BlockUtils.isChunkLoaded(world, goal)) {
             // Cannot path to unloaded chunk yet — leave as null, live fallback will handle it
-            LOGGER.debug("Pre-compute skip step {} (chunk not loaded)", precomputeIndex);
+            LOGGER.info("Pre-compute skip step {} (chunk not loaded)", precomputeIndex);
         } else {
             List<BlockPos> path = null;
             PathHandler pathHandler = MacroModClient.getPathHandler();
@@ -308,10 +309,11 @@ public class MacroExecutor {
                 path = toBlockPosPath(sp);
             }
             if (path == null || path.isEmpty()) {
+                fallbackPathFinder.setOnlyGround(currentMacro.getConfig().isOnlyGround());
                 path = fallbackPathFinder.findPath(from, goal, world);
             }
             precomputedPaths.set(precomputeIndex, path);
-            LOGGER.debug("Pre-computed path for step {}: {} nodes", precomputeIndex,
+            LOGGER.info("Pre-computed path for step {}: {} nodes", precomputeIndex,
                     path != null ? path.size() : 0);
         }
 
@@ -371,6 +373,7 @@ public class MacroExecutor {
                 path = toBlockPosPath(sp);
             }
             if (path == null || path.isEmpty()) {
+                fallbackPathFinder.setOnlyGround(currentMacro.getConfig().isOnlyGround());
                 path = fallbackPathFinder.findPath(player.getBlockPos(), goal, world);
             }
             if (path == null || path.isEmpty()) {
@@ -576,12 +579,16 @@ public class MacroExecutor {
                 miningAimRefreshInterval = 400L + MINE_RAND.nextInt(500); // 400–900 ms
             }
 
-            // Smoothly look at the randomised aim point
+            // Aim at the randomised aim point
             movementHelper.lookAt(player, miningAimPoint, 0.10f);
 
-            // Wait until roughly aligned to avoid starting mining at wrong face angles.
-            if (!movementHelper.isLookingAt(player, miningAimPoint, 10.0f)) {
-                return;
+            // If crosshair is NOT locked, wait until properly aligned before mining
+            // If crosshair IS locked, always keep adjusting aim to maintain lock
+            if (!currentMacro.getConfig().isLockCrosshair()) {
+                // Wait until roughly aligned to avoid starting mining at wrong face angles.
+                if (!movementHelper.isLookingAt(player, miningAimPoint, 10.0f)) {
+                    return;
+                }
             }
 
             // Wait for the game's crosshair to actually be on the target block.
@@ -685,6 +692,7 @@ public class MacroExecutor {
                 miningPath = toBlockPosPath(sp);
             }
             if (miningPath == null || miningPath.isEmpty()) {
+                fallbackPathFinder.setOnlyGround(currentMacro.getConfig().isOnlyGround());
                 miningPath = fallbackPathFinder.findPath(player.getBlockPos(), targetBlock, world);
             }
             if (miningPath == null || miningPath.isEmpty()) {
@@ -890,7 +898,7 @@ public class MacroExecutor {
             }
         }
         if (added > 0) {
-            LOGGER.debug("Radius scan found {} extra blocks for step {}", added, currentStepIndex);
+            LOGGER.info("Radius scan found {} extra blocks for step {}", added, currentStepIndex);
         }
     }
 

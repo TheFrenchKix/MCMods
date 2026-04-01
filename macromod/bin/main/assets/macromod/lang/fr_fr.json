@@ -103,5 +103,18 @@
   "macromod.chat.stuck": "Le joueur semble bloqué. Recalcul du chemin...",
   "macromod.chat.path_not_found": "Aucun chemin trouvé vers le waypoint. Étape ignorée.",
   "macromod.chat.timeout": "Timeout de navigation. Arrêt de la macro.",
-  "macromod.chat.chunk_not_loaded": "En attente du chargement du chunk..."
+  "macromod.chat.chunk_not_loaded": "En attente du chargement du chunk...",
+
+  "freelook.menu.title": "Paramètres Freelook",
+  "freelook.menu.toggle": "Mode : Basculer",
+  "freelook.menu.hold": "Mode : Maintenir",
+  "freelook.menu.perspective.first": "Perspective : Première personne",
+  "freelook.menu.perspective.second": "Perspective : Troisième personne (Avant)",
+  "freelook.menu.perspective.third": "Perspective : Troisième personne (Arrière)",
+  "freelook.menu.disabled_servers": "Serveurs désactivés",
+  "freelook.menu.enter_ip": "Entrez l'IP du serveur",
+  "freelook.menu.add_ip": "Ajouter",
+  "freelook.menu.remove": "Retirer",
+  "freelook.key.activate": "Activer Freelook",
+  "freelook.key.menu": "Menu Freelook"
 }
