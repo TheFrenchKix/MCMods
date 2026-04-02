@@ -57,7 +57,8 @@ public class MacroEditScreen extends Screen {
     private String  editDescription;
     private boolean editLoop;
     private boolean editSkipMismatch;
-    private boolean editStopOnDanger;
+    private boolean editAttackDanger;
+    private int     editAttackCPS;
     private int     editMiningDelay;
     private int     editMoveTimeout;
     private float   editArrivalRadius;
@@ -95,10 +96,10 @@ public class MacroEditScreen extends Screen {
     private TextFieldWidget descriptionField;
 
     // ── Hit areas ──────────────────────────────────────────────
-    /** chipBounds[i] = {x, y, w}  –  Loop / SkipMismatch / StopOnDanger / OnlyGround / LockCamera */
+    /** chipBounds[i] = {x, y, w}  –  Loop / SkipMismatch / AttackDanger / OnlyGround / LockCamera */
     private final int[][] chipBounds   = new int[5][3];
     /** cyclerBounds[i] = {leftBtnX, rightBtnX, y}  –  Delay / Timeout / Radius */
-    private final int[][] cyclerBounds = new int[3][3];
+    private final int[][] cyclerBounds = new int[4][3];
     /** attackChipBounds[0]=attack toggle, [1]=mode chip */
     private final int[][] attackChipBounds = new int[2][3];
     /** attackRangeBounds = {leftX, rightX, y} */
@@ -122,7 +123,8 @@ public class MacroEditScreen extends Screen {
         MacroConfig cfg = macro.getConfig();
         editLoop         = cfg.isLoop();
         editSkipMismatch = cfg.isSkipMismatch();
-        editStopOnDanger = cfg.isStopOnDanger();
+        editAttackDanger = cfg.isAttackDanger();
+        editAttackCPS    = cfg.getAttackCPS();
         editOnlyGround   = cfg.isOnlyGround();
         editLockCrosshair = cfg.isLockCrosshair();
         editMiningDelay  = cfg.getMiningDelay();
@@ -232,9 +234,14 @@ public class MacroEditScreen extends Screen {
 
         dy = renderChip(ctx, mx, my, x, dy, "Loop",           editLoop,         false, 0) + 5;
         dy = renderChip(ctx, mx, my, x, dy, "Skip Mismatch",  editSkipMismatch, false, 1) + 5;
-        dy = renderChip(ctx, mx, my, x, dy, "Stop On Danger", editStopOnDanger, true,  2) + 5;
+        dy = renderChip(ctx, mx, my, x, dy, "Attack Danger",  editAttackDanger, true,  2) + 5;
         dy = renderChip(ctx, mx, my, x, dy, "Only Ground",    editOnlyGround,   false, 3) + 5;
         dy = renderChip(ctx, mx, my, x, dy, "Lock Crosshair", editLockCrosshair, false, 4) + 8;
+
+        // Attack CPS slider (when Attack Danger is enabled)
+        if (editAttackDanger) {
+            dy = renderCycler(ctx, mx, my, x, dy, "Attack CPS", editAttackCPS + " cps", 3) + 4;
+        }
 
         // Numeric section
         ctx.fill(x, dy, panelX + LEFT_W - 10, dy + 1, C_DIVIDER);
@@ -518,7 +525,7 @@ public class MacroEditScreen extends Screen {
                 switch (i) {
                     case 0 -> editLoop         = !editLoop;
                     case 1 -> editSkipMismatch = !editSkipMismatch;
-                    case 2 -> editStopOnDanger = !editStopOnDanger;
+                    case 2 -> editAttackDanger = !editAttackDanger;
                     case 3 -> editOnlyGround   = !editOnlyGround;
                     case 4 -> editLockCrosshair = !editLockCrosshair;
                 }
@@ -527,8 +534,9 @@ public class MacroEditScreen extends Screen {
         }
 
         // Numeric cyclers
-        for (int i = 0; i < 3; i++) {
+        for (int i = 0; i < 4; i++) {
             int lx = cyclerBounds[i][0], rx = cyclerBounds[i][1], cy = cyclerBounds[i][2];
+            if (lx == 0 && rx == 0) continue; // Skip unused bounds
             if (imy >= cy && imy < cy + 16) {
                 if (imx >= lx && imx < lx + 18) { cycleNumeric(i, -1); return true; }
                 if (imx >= rx && imx < rx + 18) { cycleNumeric(i, +1); return true; }
@@ -665,6 +673,7 @@ public class MacroEditScreen extends Screen {
                 int steps = Math.round(editArrivalRadius / 0.5f) + dir;
                 editArrivalRadius = clamp(steps, 1, 10) * 0.5f;
             }
+            case 3 -> editAttackCPS = clamp(editAttackCPS + dir, 1, 20);
         }
     }
 
@@ -680,7 +689,8 @@ public class MacroEditScreen extends Screen {
         MacroConfig cfg = macro.getConfig();
         cfg.setLoop(editLoop);
         cfg.setSkipMismatch(editSkipMismatch);
-        cfg.setStopOnDanger(editStopOnDanger);
+        cfg.setAttackDanger(editAttackDanger);
+        cfg.setAttackCPS(editAttackCPS);
         cfg.setOnlyGround(editOnlyGround);
         cfg.setLockCrosshair(editLockCrosshair);
         cfg.setMiningDelay(editMiningDelay);

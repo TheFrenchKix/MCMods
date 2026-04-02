@@ -9,6 +9,7 @@
   "key.macromod.stop_macro": "Stop Macro",
   "key.macromod.toggle_freelook": "Toggle Freelook",
   "key.macromod.toggle_keybind_hud": "Toggle Keybind HUD",
+  "key.macromod.debug_info": "Debug Info (Entity/Block)",
 
   "macromod.screen.title": "Macro Manager",
   "macromod.screen.edit.title": "Edit Macro",
@@ -71,6 +72,7 @@
   "macromod.chat.macro_started": "Macro '%s' started.",
   "macromod.chat.macro_started_loop": "Macro '%s' started (loop mode).",
   "macromod.chat.macro_stopped": "Macro stopped.",
+  "macromod.chat.macro_stopped_death": "Macro stopped - player died!",
   "macromod.chat.macro_paused": "Macro paused.",
   "macromod.chat.macro_resumed": "Macro resumed.",
   "macromod.chat.macro_deleted": "Macro '%s' deleted.",

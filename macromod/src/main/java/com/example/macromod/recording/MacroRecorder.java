@@ -97,6 +97,7 @@ public class MacroRecorder {
 
         HitResult hitResult = client.crosshairTarget;
         if (hitResult == null || hitResult.getType() != HitResult.Type.BLOCK) {
+            sendBruteMessage("crosshairTarget", Formatting.RED);
             sendMessage("macromod.chat.no_block_targeted", Formatting.RED);
             return;
         }
@@ -104,6 +105,13 @@ public class MacroRecorder {
         BlockHitResult blockHit = (BlockHitResult) hitResult;
         BlockPos pos = blockHit.getBlockPos();
         String blockId = BlockUtils.getBlockId(world, pos);
+
+        // Check if leaves or solid blocks are blocking the path to this target
+        if (BlockUtils.isBlockedByLeavesOrSolid(world, player.getEyePos(), pos)) {
+            LOGGER.info("Block target rejected: blocked by leaves or solid block at {}", pos);
+            sendMessage("macromod.chat.no_block_targeted", Formatting.RED);
+            return;
+        }
 
         BlockTarget target = new BlockTarget(pos, blockId);
         MacroStep currentStep = currentMacro.getSteps().get(currentMacro.getSteps().size() - 1);
@@ -210,6 +218,20 @@ public class MacroRecorder {
         if (client.player != null) {
             client.player.sendMessage(
                     Text.translatable(key, args).formatted(color),
+                    false
+            );
+        }
+    }
+
+    private void sendBruteMessage(String message, Formatting color, Object... args) {
+        MinecraftClient client = MinecraftClient.getInstance();
+        if (client.player != null) {
+            client.player.sendMessage(
+                    Text.literal(String.format(message, args)).formatted(color),
+                    false
+            );
+            client.player.sendMessage(
+                    Text.literal(String.format(message, args)).formatted(color),
                     false
             );
         }

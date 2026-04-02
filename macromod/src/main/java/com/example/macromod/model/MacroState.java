@@ -22,6 +22,8 @@ public enum MacroState {
     NEXT_STEP,
     /** Execution paused by user. */
     PAUSED,
+    /** Line farm mode: mining while moving in snake pattern. */
+    LINE_FARMING,
     /** Macro completed successfully. */
     COMPLETED,
     /** An error occurred during execution. */

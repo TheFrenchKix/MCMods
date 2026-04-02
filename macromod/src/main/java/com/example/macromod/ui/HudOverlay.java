@@ -172,6 +172,7 @@ public class HudOverlay {
             case PATHFINDING -> "Pathfinding...";
             case MOVING -> "Moving...";
             case MINING -> "Mining...";
+            case LINE_FARMING -> "Line Farming...";
             case NEXT_STEP -> "Next step...";
             case PAUSED -> "⏸ Paused";
             case COMPLETED -> "✅ Completed";
@@ -184,7 +185,7 @@ public class HudOverlay {
             case IDLE -> 0xAAAAAA;
             case PRECOMPUTING -> 0xAA55FF;
             case PATHFINDING, MOVING -> 0x55FFFF;
-            case MINING -> 0xFFAA00;
+            case MINING, LINE_FARMING -> 0xFFAA00;
             case NEXT_STEP -> 0x55FF55;
             case PAUSED -> 0xFFFF55;
             case COMPLETED -> 0x55FF55;

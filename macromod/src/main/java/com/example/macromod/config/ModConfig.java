@@ -15,7 +15,7 @@ public class ModConfig {
     private int defaultMiningDelay = 50;
     private int defaultMoveTimeout = 200;
     private float defaultArrivalRadius = 1.5f;
-    private boolean defaultStopOnDanger = true;
+    private boolean defaultAttackDanger = true;
     private boolean defaultSkipMismatch = true;
     private int maxPathNodes = 2000;
     private boolean recordingAutoAddBlocks = false;
@@ -69,12 +69,12 @@ public class ModConfig {
         this.defaultArrivalRadius = defaultArrivalRadius;
     }
 
-    public boolean isDefaultStopOnDanger() {
-        return defaultStopOnDanger;
+    public boolean isDefaultAttackDanger() {
+        return defaultAttackDanger;
     }
 
-    public void setDefaultStopOnDanger(boolean defaultStopOnDanger) {
-        this.defaultStopOnDanger = defaultStopOnDanger;
+    public void setDefaultAttackDanger(boolean defaultAttackDanger) {
+        this.defaultAttackDanger = defaultAttackDanger;
     }
 
     public boolean isDefaultSkipMismatch() {

@@ -9,6 +9,7 @@
   "key.macromod.stop_macro": "Arrêter la macro",
   "key.macromod.toggle_freelook": "Activer/Désactiver le mode libre",
   "key.macromod.toggle_keybind_hud": "Afficher/Masquer HUD des touches",
+  "key.macromod.debug_info": "Info Débogage (Entité/Bloc)",
 
   "macromod.screen.title": "Gestionnaire de Macros",
   "macromod.screen.edit.title": "Modifier la Macro",
@@ -71,6 +72,7 @@
   "macromod.chat.macro_started": "Macro '%s' démarrée.",
   "macromod.chat.macro_started_loop": "Macro '%s' démarrée (mode boucle).",
   "macromod.chat.macro_stopped": "Macro arrêtée.",
+  "macromod.chat.macro_stopped_death": "Macro arrêtée - le joueur est mort!",
   "macromod.chat.macro_paused": "Macro en pause.",
   "macromod.chat.macro_resumed": "Macro reprise.",
   "macromod.chat.macro_deleted": "Macro '%s' supprimée.",

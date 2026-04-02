@@ -3,6 +3,8 @@ package com.example.macromod.pathfinding;
 import com.example.macromod.util.BlockUtils;
 import net.minecraft.client.world.ClientWorld;
 import net.minecraft.util.math.BlockPos;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.util.ArrayList;
 import java.util.Collections;
@@ -30,6 +32,7 @@ import java.util.PriorityQueue;
  */
 public class PathFinder {
 
+    private static final Logger LOGGER = LoggerFactory.getLogger("macromod-pathfinder");
     private static final double SQRT2 = Math.sqrt(2.0);
 
     // ── Neighbour offsets: 4 straight then 4 diagonal ─────────────
@@ -43,6 +46,7 @@ public class PathFinder {
 
     private int maxNodes = 5000;
     private boolean onlyGround = false;
+    private boolean debugLogging = true;
 
     public void setMaxNodes(int maxNodes) {
         this.maxNodes = maxNodes;
@@ -52,6 +56,10 @@ public class PathFinder {
         this.onlyGround = onlyGround;
     }
 
+    public void setDebugLogging(boolean enabled) {
+        this.debugLogging = enabled;
+    }
+
     // ═══════════════════════════════════════════════════════════════
     // Public API
     // ═══════════════════════════════════════════════════════════════
@@ -59,6 +67,10 @@ public class PathFinder {
     public List<BlockPos> findPath(BlockPos start, BlockPos goal, ClientWorld world) {
         Map<BlockPos, BlockPos>  cameFrom = new HashMap<>();
         Map<BlockPos, Double>    gScore   = new HashMap<>();
+
+        if (debugLogging) {
+            LOGGER.info("PathFinder: Starting path search from {} to {}", start, goal);
+        }
 
         // f(n) = g(n) + h(n); tie-break on h so we prefer nodes closer to goal
         PriorityQueue<BlockPos> openSet = new PriorityQueue<>((a, b) -> {
@@ -77,7 +89,11 @@ public class PathFinder {
             explored++;
 
             if (current.equals(goal) || isNear(current, goal)) {
-                return simplifyPath(reconstructPath(cameFrom, current));
+                List<BlockPos> finalPath = simplifyPath(reconstructPath(cameFrom, current));
+                if (debugLogging) {
+                    LOGGER.info("PathFinder: Path found! Explored {} nodes, final path length: {}", explored, finalPath.size());
+                }
+                return finalPath;
             }
 
             double gCurrent = gScore.getOrDefault(current, Double.MAX_VALUE);
@@ -94,6 +110,9 @@ public class PathFinder {
             }
         }
 
+        if (debugLogging) {
+            LOGGER.warn("PathFinder: No path found! Explored {} nodes (max: {})", explored, maxNodes);
+        }
         return null;
     }
 
@@ -134,10 +153,7 @@ public class PathFinder {
      * both orthogonal axis intermediates must be passable on the player's
      * column before the diagonal is accepted.</p>
      * 
-     * <p>Height limits prevent unrealistic vertical climbing:
-     * - No position can be more than MAX_HEIGHT_ABOVE_START above the path start
-     * - Step-up (+1) is only allowed if flat position isn't valid (prevents stacking)
-     * - Step-up has high cost penalty to discourage unnecessary climbing</p>
+     * <p>Step-up is strictly limited to 1 block to match player jump capability.</p>
      */
     private List<Move> getNeighbors(BlockPos pos, ClientWorld world) {
         List<Move> moves = new ArrayList<>(16);
@@ -151,37 +167,79 @@ public class PathFinder {
             // ── Corner-cutting guard ──────────────────────────────
             // For diagonal (dx, dz): both (dx,0) and (0,dz) axes must be
             // passable at the player's current level and one above.
-            if (isDiag && !diagonalClear(pos, dx, dz, world)) continue;
+            if (isDiag && !diagonalClear(pos, dx, dz, world)) {
+                if (debugLogging) {
+                    LOGGER.debug("PathFinder: Diagonal blocked at {} towards ({},{})", pos, dx, dz);
+                }
+                continue;
+            }
 
-            // ── Try vertical variants ─────────────────────────────
+            // ── Try flat position first ────────────────────────────
             BlockPos flat = pos.add(dx, 0,  dz);
-            BlockPos up   = pos.add(dx, 1,  dz);
 
-            // Check if flat position is valid
+            // Check if flat position is valid (ground to walk on)
             if (canStandAt(flat, world)) {
                 moves.add(new Move(flat, baseCost));
-            } 
-            // Only allow step-up if flat is SOLID ground and up is valid
-            // This prevents stepping through leaves or air (no block placement/flying)
-            // Skip if onlyGround mode is enabled
-            else if (!onlyGround && BlockUtils.isSolid(world, flat) && canStandAt(up, world) && BlockUtils.isPassable(world, pos.up())) {
-                // Step up: only 1 block; headroom at current pos must be clear
-                // Must step UP ONTO solid ground (not empty space or leaves)
-                // Diagonal step-up: both intermediate columns must also clear at y+1
-                double stepUpCost = baseCost + 0.8; // significant cost penalty for stepping up
-                if (!isDiag || diagonalClear(pos.up(), dx, dz, world)) {
-                    moves.add(new Move(up, stepUpCost));
+                if (debugLogging) {
+                    LOGGER.debug("PathFinder: Valid flat move from {} to {}", pos, flat);
                 }
             } 
+            // ── Try step-up ONLY if flat is blocked ────────────────
+            // Step up: up to 2 blocks to handle most obstacles
+            // (Player can jump ~1.25 blocks, but with terrain variation needs flexibility)
+            else if (!onlyGround && BlockUtils.isSolid(world, flat)) {
+                // Try 1-block step-up first
+                BlockPos up1   = pos.add(dx, 1,  dz);
+                boolean canStandUp1 = canStandAt(up1, world);
+                boolean hasHeadroom1 = BlockUtils.isPassable(world, pos.up());
+                boolean diagonalOk1 = !isDiag || diagonalClear(pos, dx, dz, world);
+                
+                if (canStandUp1 && hasHeadroom1 && diagonalOk1) {
+                    double stepUpCost = baseCost + 0.8;
+                    moves.add(new Move(up1, stepUpCost));
+                    if (debugLogging) {
+                        LOGGER.debug("PathFinder: Valid 1-block step-up from {} to {}", pos, up1);
+                    }
+                } 
+                // If 1-block doesn't work, try 2-block step-up as fallback
+                else if (!onlyGround && BlockUtils.isSolid(world, up1)) {
+                    BlockPos up2 = pos.add(dx, 2, dz);
+                    boolean canStandUp2 = canStandAt(up2, world);
+                    boolean hasHeadroom2 = BlockUtils.isPassable(world, pos.up()) 
+                        && BlockUtils.isPassable(world, pos.add(dx, 0, dz).up());
+                    boolean diagonalOk2 = !isDiag || diagonalClear(pos, dx, dz, world);
+                    
+                    if (canStandUp2 && hasHeadroom2 && diagonalOk2) {
+                        double stepUpCost = baseCost + 1.6; // Higher cost than 1-block to prefer lower jumps
+                        moves.add(new Move(up2, stepUpCost));
+                        if (debugLogging) {
+                            LOGGER.debug("PathFinder: Valid 2-block step-up from {} to {}", pos, up2);
+                        }
+                    } else {
+                        if (debugLogging) {
+                            LOGGER.debug("PathFinder: 2-block step-up blocked from {} to {}: canStands={} headroom={} diagonalOk={}",
+                                pos, up2, canStandUp2, hasHeadroom2, diagonalOk2);
+                        }
+                    }
+                }
+                
+                if (debugLogging && (!canStandUp1 || !hasHeadroom1 || !diagonalOk1)) {
+                    LOGGER.debug("PathFinder: 1-block step-up blocked from {} to {}: canStands={} headroom={} diagonalOk={}",
+                        pos, up1, canStandUp1, hasHeadroom1, diagonalOk1);
+                }
+            }
             
             // ── Try stepping down (support multiple descent levels) ────
-            // Check up to 3 blocks down for paths through lower openings
-            for (int downStep = 1; downStep <= 3; downStep++) {
+            // Check up to 2 blocks down for paths (not 3 - limit falling)
+            for (int downStep = 1; downStep <= 2; downStep++) {
                 BlockPos down = pos.add(dx, -downStep, dz);
                 if (canStandAt(down, world)) {
                     // Cost increases with depth to prefer shallower descents
                     double downCost = baseCost + (downStep * 0.1);
                     moves.add(new Move(down, downCost));
+                    if (debugLogging) {
+                        LOGGER.debug("PathFinder: Valid step-down ({} blocks) from {} to {}", downStep, pos, down);
+                    }
                     break; // Found ground, no need to check deeper
                 }
             }
@@ -200,10 +258,15 @@ public class PathFinder {
     private boolean diagonalClear(BlockPos from, int dx, int dz, ClientWorld world) {
         BlockPos axisX = from.add(dx, 0, 0);
         BlockPos axisZ = from.add(0,  0, dz);
-        return BlockUtils.isPassable(world, axisX)
-                && BlockUtils.isPassable(world, axisX.up())
-                && BlockUtils.isPassable(world, axisZ)
-                && BlockUtils.isPassable(world, axisZ.up());
+        boolean axisXPass = BlockUtils.isPassable(world, axisX) && BlockUtils.isPassable(world, axisX.up());
+        boolean axisZPass = BlockUtils.isPassable(world, axisZ) && BlockUtils.isPassable(world, axisZ.up());
+        
+        if (debugLogging && (!axisXPass || !axisZPass)) {
+            LOGGER.debug("PathFinder: Diagonal corner cut blocked at {}: axisX({})={} axisZ({})={}",
+                from, axisX, axisXPass, axisZ, axisZPass);
+        }
+        
+        return axisXPass && axisZPass;
     }
 
     // ═══════════════════════════════════════════════════════════════
@@ -213,9 +276,17 @@ public class PathFinder {
     /** A position is valid to stand at when the block below is solid and the
      *  2-block player column (feet + head) is passable. */
     private boolean canStandAt(BlockPos pos, ClientWorld world) {
-        return BlockUtils.isSolid(world, pos.down())
-                && BlockUtils.isPassable(world, pos)
-                && BlockUtils.isPassable(world, pos.up());
+        boolean hasSolidGround = BlockUtils.isSolid(world, pos.down());
+        boolean feetPassable = BlockUtils.isPassable(world, pos);
+        boolean headPassable = BlockUtils.isPassable(world, pos.up());
+        boolean valid = hasSolidGround && feetPassable && headPassable;
+        
+        if (debugLogging && !valid) {
+            LOGGER.debug("PathFinder: Cannot stand at {}: ground={} feet={} head={}", 
+                pos, hasSolidGround, feetPassable, headPassable);
+        }
+        
+        return valid;
     }
 
     // ═══════════════════════════════════════════════════════════════

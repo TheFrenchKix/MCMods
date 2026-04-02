@@ -146,7 +146,7 @@ public final class BlockUtils {
     /**
      * Returns true if there is a direct line of sight (no other block in the way)
      * from {@code eyePos} to the center of {@code targetPos}.
-     * Uses an OUTLINE-shape raycast; returns true if the first hit is the target block or a miss.
+     * Simplified: just check if the raycast would hit the target block directly.
      */
     public static boolean hasLineOfSight(ClientWorld world, Vec3d eyePos, BlockPos targetPos) {
         if (world == null || eyePos == null || targetPos == null) {
@@ -161,11 +161,52 @@ public final class BlockUtils {
                     (net.minecraft.entity.Entity) null
             );
             BlockHitResult result = world.raycast(ctx);
-            return result.getBlockPos().equals(targetPos)
-                    || result.getType() == HitResult.Type.MISS;
+            // Line of sight exists if we hit the target block or nothing at all
+            return result.getBlockPos().equals(targetPos) || result.getType() == HitResult.Type.MISS;
         } catch (Exception e) {
             // Fallback on any error during raycast
             return true;
         }
+    }
+
+    /**
+     * Checks if the target block is blocked by leaves or other solid blocks.
+     * Returns true if leaves or solid blocks are between the player's eye and the target.
+     * Treats leaves as solid obstacles.
+     */
+    public static boolean isBlockedByLeavesOrSolid(ClientWorld world, Vec3d eyePos, BlockPos targetPos) {
+        if (world == null || eyePos == null || targetPos == null) {
+            return false;
+        }
+
+        Vec3d targetCenter = Vec3d.ofCenter(targetPos);
+        Vec3d direction = targetCenter.subtract(eyePos).normalize();
+        double distance = eyePos.distanceTo(targetCenter);
+        
+        // Step through the path in small increments to check for blocking blocks
+        for (double d = 0.1; d < distance; d += 0.5) {
+            Vec3d checkPoint = eyePos.add(direction.multiply(d));
+            BlockPos checkPos = BlockPos.ofFloored(checkPoint);
+            
+            // Skip the target block itself
+            if (checkPos.equals(targetPos)) {
+                continue;
+            }
+            
+            BlockState state = world.getBlockState(checkPos);
+            String blockId = Registries.BLOCK.getId(state.getBlock()).toString();
+            
+            // If we hit leaves, it's blocked
+            if (blockId.endsWith("leaves")) {
+                return true;
+            }
+            
+            // If we hit a solid block, it's blocked
+            if (state.isSolidBlock(world, checkPos)) {
+                return true;
+            }
+        }
+        
+        return false;
     }
 }

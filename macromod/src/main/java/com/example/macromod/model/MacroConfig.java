@@ -18,8 +18,11 @@ public class MacroConfig {
     /** Whether to skip blocks that don't match the expected type. */
     private boolean skipMismatch;
 
-    /** Whether to stop execution on danger (low health, hostile mobs). */
-    private boolean stopOnDanger;
+    /** Whether to attack entities on danger (low health, hostile mobs). */
+    private boolean attackDanger;
+
+    /** Attack CPS (clicks per second) when attackDanger is active (1–20). */
+    private int attackCPS = 10;
 
     /** Delay in milliseconds between mining each block. */
     private int miningDelay;
@@ -48,10 +51,13 @@ public class MacroConfig {
     /** Whether to keep crosshair locked on target while allowing camera movement. */
     private boolean lockCrosshair = false;
 
+    /** Macro execution mode type (NORMAL or LINE_FARM). */
+    private MacroType macroType = MacroType.NORMAL;
+
     public MacroConfig() {
         this.loop = false;
         this.skipMismatch = true;
-        this.stopOnDanger = true;
+        this.attackDanger = true;
         this.miningDelay = 50;
         this.moveTimeout = 10000;
         this.arrivalRadius = 0.5f;
@@ -73,12 +79,20 @@ public class MacroConfig {
         this.skipMismatch = skipMismatch;
     }
 
-    public boolean isStopOnDanger() {
-        return stopOnDanger;
+    public boolean isAttackDanger() {
+        return attackDanger;
     }
 
-    public void setStopOnDanger(boolean stopOnDanger) {
-        this.stopOnDanger = stopOnDanger;
+    public void setAttackDanger(boolean attackDanger) {
+        this.attackDanger = attackDanger;
+    }
+
+    public int getAttackCPS() {
+        return attackCPS;
+    }
+
+    public void setAttackCPS(int attackCPS) {
+        this.attackCPS = Math.max(1, Math.min(20, attackCPS));
     }
 
     public int getMiningDelay() {
@@ -153,6 +167,14 @@ public class MacroConfig {
         this.lockCrosshair = lockCrosshair;
     }
 
+    public MacroType getMacroType() {
+        return macroType;
+    }
+
+    public void setMacroType(MacroType macroType) {
+        this.macroType = macroType;
+    }
+
     /**
      * Creates a copy of this config.
      */
@@ -160,7 +182,7 @@ public class MacroConfig {
         MacroConfig copy = new MacroConfig();
         copy.loop = loop;
         copy.skipMismatch = skipMismatch;
-        copy.stopOnDanger = stopOnDanger;
+        copy.attackDanger = attackDanger;
         copy.miningDelay = miningDelay;
         copy.moveTimeout = moveTimeout;
         copy.arrivalRadius = arrivalRadius;
@@ -168,8 +190,10 @@ public class MacroConfig {
         copy.attackWhitelistOnly = attackWhitelistOnly;
         copy.attackWhitelist = new ArrayList<>(attackWhitelist);
         copy.attackRange = attackRange;
+        copy.attackCPS = attackCPS;
         copy.onlyGround = onlyGround;
         copy.lockCrosshair = lockCrosshair;
+        copy.macroType = macroType;
         return copy;
     }
 }

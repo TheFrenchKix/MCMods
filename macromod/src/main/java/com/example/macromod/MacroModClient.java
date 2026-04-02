@@ -23,8 +23,20 @@ import net.fabricmc.fabric.api.client.keybinding.v1.KeyBindingHelper;
 import net.fabricmc.fabric.api.client.rendering.v1.HudRenderCallback;
 import net.fabricmc.fabric.api.client.rendering.v1.WorldRenderEvents;
 import net.minecraft.client.MinecraftClient;
+import net.minecraft.client.network.ClientPlayerEntity;
 import net.minecraft.client.option.KeyBinding;
 import net.minecraft.client.util.InputUtil;
+import net.minecraft.client.world.ClientWorld;
+import net.minecraft.block.BlockState;
+import net.minecraft.entity.LivingEntity;
+import net.minecraft.registry.Registries;
+import net.minecraft.text.Text;
+import net.minecraft.util.Formatting;
+import net.minecraft.util.hit.BlockHitResult;
+import net.minecraft.util.hit.EntityHitResult;
+import net.minecraft.util.hit.HitResult;
+import net.minecraft.util.math.BlockPos;
+import net.minecraft.world.BlockView;
 import org.lwjgl.glfw.GLFW;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -57,6 +69,7 @@ public class MacroModClient implements ClientModInitializer {
     private static KeyBinding toggleRecordingKey;
     private static KeyBinding stopMacroKey;
     private static KeyBinding toggleKeybindHudKey;
+    private static KeyBinding debugInfoKey;
 
     // ─── Initialization ───────────────────────────────────────────
 
@@ -95,7 +108,9 @@ public class MacroModClient implements ClientModInitializer {
         PathDebugRenderer pathDebugRenderer = new PathDebugRenderer();
         WorldRenderEvents.AFTER_TRANSLUCENT.register(pathDebugRenderer::onWorldRender);
 
+        LOGGER.info("========================================");
         LOGGER.info("Macro Mod initialized successfully.");
+        LOGGER.info("========================================");
     }
 
     private void registerKeybindings() {
@@ -145,6 +160,13 @@ public class MacroModClient implements ClientModInitializer {
                 "key.macromod.toggle_keybind_hud",
                 InputUtil.Type.KEYSYM,
                 GLFW.GLFW_KEY_H,
+                "category.macromod.general"
+        ));
+
+        debugInfoKey = KeyBindingHelper.registerKeyBinding(new KeyBinding(
+                "key.macromod.debug_info",
+                InputUtil.Type.KEYSYM,
+                GLFW.GLFW_KEY_I,
                 "category.macromod.general"
         ));
     }
@@ -240,6 +262,69 @@ public class MacroModClient implements ClientModInitializer {
             boolean current = configManager.getConfig().isKeybindHudVisible();
             configManager.getConfig().setKeybindHudVisible(!current);
             configManager.save();
+        }
+
+        // Debug info - show entity or block data
+        while (debugInfoKey.wasPressed()) {
+            debugTargetInfo(client);
+        }
+    }
+
+    /**
+     * Displays information about the entity or block the player is currently targeting.
+     * Shows data in chat and logs it.
+     */
+    private void debugTargetInfo(MinecraftClient client) {
+        if (client.player == null || client.world == null) return;
+
+        HitResult hitResult = client.crosshairTarget;
+        if (hitResult == null) {
+            sendDebugMessage(client.player, "No target");
+            return;
+        }
+
+        if (hitResult.getType() == HitResult.Type.ENTITY) {
+            // Entity info
+            EntityHitResult entityHit = (EntityHitResult) hitResult;
+            net.minecraft.entity.Entity entity = entityHit.getEntity();
+            
+            String info = String.format(
+                "ENTITY: %s | Pos: (%.1f, %.1f, %.1f) | Health: %.1f | Vel: (%.2f, %.2f, %.2f) | UUID: %s",
+                entity.getType().getName().getString(),
+                entity.getX(), entity.getY(), entity.getZ(),
+                entity instanceof LivingEntity le ? le.getHealth() : 0.0,
+                entity.getVelocity().x, entity.getVelocity().y, entity.getVelocity().z,
+                entity.getUuid()
+            );
+            
+            sendDebugMessage(client.player, info);
+            LOGGER.info("[DEBUG] {}", info);
+        } else if (hitResult.getType() == HitResult.Type.BLOCK) {
+            // Block info
+            BlockHitResult blockHit = (BlockHitResult) hitResult;
+            BlockPos pos = blockHit.getBlockPos();
+            BlockState state = client.world.getBlockState(pos);
+            String blockId = Registries.BLOCK.getId(state.getBlock()).toString();
+            
+            String info = String.format(
+                "BLOCK: %s | Pos: (%d, %d, %d) | Face: %s | Properties: %s",
+                blockId,
+                pos.getX(), pos.getY(), pos.getZ(),
+                blockHit.getSide(),
+                state.getEntries()
+            );
+            
+            sendDebugMessage(client.player, info);
+            LOGGER.info("[DEBUG] {}", info);
+        }
+    }
+
+    /**
+     * Sends a debug message to the player in chat (client-side only).
+     */
+    private void sendDebugMessage(ClientPlayerEntity player, String message) {
+        if (player != null) {
+            player.sendMessage(Text.literal("[DEBUG] " + message).formatted(Formatting.GRAY), false);
         }
     }
 

@@ -74,6 +74,10 @@ public class MacroCommands {
                         .then(ClientCommandManager.literal("status")
                                 .executes(ctx -> executeStatus(ctx.getSource())))
 
+                        // /macro linefarm
+                        .then(ClientCommandManager.literal("linefarm")
+                                .executes(ctx -> executeLineFarm(ctx.getSource())))
+
                         // /macro record start <name>
                         // /macro record waypoint [label]
                         // /macro record block
@@ -181,6 +185,12 @@ public class MacroCommands {
         return 1;
     }
 
+    private static int executeLineFarm(FabricClientCommandSource source) {
+        MacroExecutor executor = MacroModClient.getExecutor();
+        executor.startLineFarm();
+        return 1;
+    }
+
     private static int executeRecordStart(FabricClientCommandSource source, String name) {
         MacroModClient.getRecorder().startRecording(name);
         return 1;
@@ -241,7 +251,7 @@ public class MacroCommands {
         source.sendFeedback(Text.translatable("macromod.chat.macro_info_config",
                 macro.getConfig().isLoop() ? "ON" : "OFF",
                 macro.getConfig().isSkipMismatch() ? "ON" : "OFF",
-                macro.getConfig().isStopOnDanger() ? "ON" : "OFF"
+                macro.getConfig().isAttackDanger() ? "ON" : "OFF"
         ).formatted(Formatting.GRAY));
 
         for (int i = 0; i < macro.getSteps().size(); i++) {

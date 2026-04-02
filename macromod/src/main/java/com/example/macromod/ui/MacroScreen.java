@@ -254,7 +254,7 @@ public class MacroScreen extends Screen {
         int cx = dx;
         cx = chip(ctx, mx, my, cx, dy, "Loop",         m.getConfig().isLoop(),         false, 0) + 4;
         cx = chip(ctx, mx, my, cx, dy, "SkipMismatch", m.getConfig().isSkipMismatch(), false, 1) + 4;
-        cx = chip(ctx, mx, my, cx, dy, "StopOnDanger", m.getConfig().isStopOnDanger(), true,  2) + 4;
+        cx = chip(ctx, mx, my, cx, dy, "AttackDanger", m.getConfig().isAttackDanger(), true,  2) + 4;
         cx = chip(ctx, mx, my, cx, dy, "OnlyGround", m.getConfig().isOnlyGround(), false, 3) + 4;
              chip(ctx, mx, my, cx, dy, "Lock Crosshair", m.getConfig().isLockCrosshair(), false, 4);
         dy += 20;
@@ -378,7 +378,7 @@ public class MacroScreen extends Screen {
                     switch (i) {
                         case 0 -> cfg.setLoop(!cfg.isLoop());
                         case 1 -> cfg.setSkipMismatch(!cfg.isSkipMismatch());
-                        case 2 -> cfg.setStopOnDanger(!cfg.isStopOnDanger());
+                        case 2 -> cfg.setAttackDanger(!cfg.isAttackDanger());
                         case 3 -> cfg.setOnlyGround(!cfg.isOnlyGround());
                         case 4 -> cfg.setLockCrosshair(!cfg.isLockCrosshair());
                     }

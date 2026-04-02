@@ -23,7 +23,7 @@ public class MovementHelper {
     /** Lerp factor for precision look-at (mining aim). Slower = smoother. */
     private static final float AIM_LERP        = 0.12f;
     /** Minimum degrees rotated per tick; prevents infinite approach at tiny angles. */
-    private static final float MIN_STEP_DEG    = 0.5f;
+    private static final float MIN_STEP_DEG    = 1.0f;
     /**
      * Player sprints only when facing within this many degrees of its destination.
      * Outside this cone it walks so it can turn without overshooting the waypoint.
@@ -31,8 +31,10 @@ public class MovementHelper {
     private static final float SPRINT_YAW_THRESHOLD = 35f;
 
     // ── Waypoint arrival ──────────────────────────────────────
-    private static final double WAYPOINT_ARRIVE_RADIUS_SQ = 0.65 * 0.65;
-    private static final double WAYPOINT_ARRIVE_DY        = 1.3;
+    // 0.75 block radius: large enough that a player arriving slightly off-axis
+    // (up to ~0.7 blocks from centre) still registers as arrived.
+    private static final double WAYPOINT_ARRIVE_RADIUS_SQ = 0.75 * 0.75;
+    private static final double WAYPOINT_ARRIVE_DY        = 1.0;
 
     // ── Jump / stuck detection ───────────────────────────────────
     private static final long   STUCK_JUMP_MS             = 550L;
@@ -98,8 +100,18 @@ public class MovementHelper {
      */
     public void moveTowards(ClientPlayerEntity player, BlockPos target) {
         Vec3d center  = Vec3d.ofCenter(target);
-        float wantYaw = yawToward(player.getPos(), center);
+        Vec3d playerPos = player.getPos();
+        float wantYaw = yawToward(playerPos, center);
         float dYaw    = wrapAngle(wantYaw - player.getYaw());
+
+        // Calculate distance to waypoint
+        double dx = playerPos.x - center.x;
+        double dz = playerPos.z - center.z;
+        double distSq = dx * dx + dz * dz;
+        
+        // When very close to waypoint, tighten angle tolerance to reduce oscillation
+        // This especially helps with diagonal movements where small angles cause key-toggle
+        double decompositionThreshold = distSq < 0.2 * 0.2 ? 0.15 : 0.1;
 
         // Aim at eye height toward the waypoint — not at the ground block
         Vec3d aimTarget = new Vec3d(target.getX() + 0.5, player.getEyePos().y, target.getZ() + 0.5);
@@ -113,10 +125,10 @@ public class MovementHelper {
         double fwd    = Math.cos(rad);   // +1 = straight ahead, -1 = straight behind
         double strafe = Math.sin(rad);   // +1 = pure right, -1 = pure left
 
-        mc.options.forwardKey.setPressed(fwd    >  0.1);
-        mc.options.backKey.setPressed   (fwd    < -0.1);
-        mc.options.rightKey.setPressed  (strafe >  0.1);
-        mc.options.leftKey.setPressed   (strafe < -0.1);
+        mc.options.forwardKey.setPressed(fwd    >  decompositionThreshold);
+        mc.options.backKey.setPressed   (fwd    < -decompositionThreshold);
+        mc.options.rightKey.setPressed  (strafe >  decompositionThreshold);
+        mc.options.leftKey.setPressed   (strafe < -decompositionThreshold);
 
         // Sprint only when heading is roughly forward (within SPRINT_YAW_THRESHOLD)
         player.setSprinting(Math.abs(dYaw) < SPRINT_YAW_THRESHOLD);
@@ -127,8 +139,17 @@ public class MovementHelper {
      */
     public void forwardToBlock(ClientPlayerEntity player, BlockPos target) {
         Vec3d center  = Vec3d.ofCenter(target);
-        float wantYaw = yawToward(player.getPos(), center);
+        Vec3d playerPos = player.getPos();
+        float wantYaw = yawToward(playerPos, center);
         float dYaw    = wrapAngle(wantYaw - player.getYaw());
+
+        // Calculate distance to block
+        double dx = playerPos.x - center.x;
+        double dz = playerPos.z - center.z;
+        double distSq = dx * dx + dz * dz;
+        
+        // When very close to target, tighten angle tolerance for diagonal stability
+        double decompositionThreshold = distSq < 0.2 * 0.2 ? 0.15 : 0.1;
 
         // Aim at eye height toward the block — not at the ground
         Vec3d aimTarget = new Vec3d(target.getX() + 0.5, player.getEyePos().y, target.getZ() + 0.5);
@@ -142,12 +163,26 @@ public class MovementHelper {
         double fwd    = Math.cos(rad);
         double strafe = Math.sin(rad);
 
-        mc.options.forwardKey.setPressed(fwd    >  0.1);
-        mc.options.backKey.setPressed   (fwd    < -0.1);
-        mc.options.rightKey.setPressed  (strafe >  0.1);
-        mc.options.leftKey.setPressed   (strafe < -0.1);
+        mc.options.forwardKey.setPressed(fwd    >  decompositionThreshold);
+        mc.options.backKey.setPressed   (fwd    < -decompositionThreshold);
+        mc.options.rightKey.setPressed  (strafe >  decompositionThreshold);
+        mc.options.leftKey.setPressed   (strafe < -decompositionThreshold);
 
         player.setSprinting(Math.abs(dYaw) < SPRINT_YAW_THRESHOLD);
+    }
+
+    /**
+     * Returns true when the player is within the arrival radius of the block center and roughly at the right altitude.
+     * @param player
+     * @param target
+     * @return
+     */
+    public void releaseForward(ClientPlayerEntity player) {
+        MinecraftClient mc = MinecraftClient.getInstance();
+        if (mc.options != null) {
+            mc.options.forwardKey.setPressed(false);
+            mc.options.backKey.setPressed(false);
+        }
     }
 
     /**
@@ -155,6 +190,9 @@ public class MovementHelper {
      * {@link #WAYPOINT_ARRIVE_RADIUS_SQ} of the block center and roughly at the
      * right altitude. This keeps the player moving through waypoints without
      * stopping.
+     * 
+     * For diagonal movements, uses a slightly larger radius to smooth out oscillation
+     * that can occur when approaching waypoints at 45° angles.
      */
     public boolean hasReachedWaypoint(ClientPlayerEntity player, BlockPos target) {
         Vec3d pos    = player.getPos();
@@ -162,7 +200,15 @@ public class MovementHelper {
         double dx = pos.x - center.x;
         double dz = pos.z - center.z;
         double dy = Math.abs(pos.y - target.getY());
-        return (dx * dx + dz * dz) <= WAYPOINT_ARRIVE_RADIUS_SQ && dy <= WAYPOINT_ARRIVE_DY;
+        
+        // Detect if approaching diagonally (both dx and dz components significant)
+        boolean isDiagonalApproach = Math.abs(dx) > 0.3 && Math.abs(dz) > 0.3;
+        
+        // Use slightly more lenient radius for diagonal approaches to prevent oscillation
+        // 0.85 instead of 0.75 blocks for diagonals
+        double radiusSq = isDiagonalApproach ? 0.85 * 0.85 : WAYPOINT_ARRIVE_RADIUS_SQ;
+        
+        return (dx * dx + dz * dz) <= radiusSq && dy <= WAYPOINT_ARRIVE_DY;
     }
 
     /**
@@ -225,6 +271,7 @@ public class MovementHelper {
             mc.options.rightKey.setPressed(false);
             mc.options.jumpKey.setPressed(false);
             mc.options.sneakKey.setPressed(false);
+            mc.options.attackKey.setPressed(false);
         }
         // Stop aim — clear target so camera doesn't drift
         smoothAim.clearTarget();
