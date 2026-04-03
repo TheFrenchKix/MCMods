@@ -52,6 +52,14 @@ public class MacroExecutor {
     private final MovementHelper movementHelper;
     private final PathFinder fallbackPathFinder = new PathFinder();
 
+    // ─── Debug throttle ─────────────────────────────────────────
+    private long lastDebugMs = 0L;
+    private static final long DEBUG_INTERVAL_MS = 500L; // log at most every 500 ms
+
+    // ─── End-of-path centering ──────────────────────────────────
+    /** True when at destination but still centering before MINING */
+    private boolean isWaitingToCenter = false;
+
     // ─── Execution state ────────────────────────────────────────
     private MacroState state = MacroState.IDLE;
     private Macro currentMacro;
@@ -93,6 +101,18 @@ public class MacroExecutor {
     private List<BlockPos> savedPathBeforeEnemies = null;
     private int savedPathIndexBeforeEnemies = 0;
     private BlockPos savedPositionBeforeEnemies = null;
+
+    // ─── Mining LOS strafe ──────────────────────────────────────
+    /** Block we are currently strafing to gain line-of-sight on. */
+    private BlockPos noLOSBlock = null;
+    /** System time when strafing started for {@link #noLOSBlock}. */
+    private long noLOSStartMs = -1L;
+    /** Initial strafe direction: true = left, false = right. */
+    private boolean noLOSStrafeLeft = true;
+    /** Switch strafe direction after this many ms. */
+    private static final long STRAFE_SWITCH_MS  = 700L;
+    /** Give up and skip the block after this many ms of strafing. */
+    private static final long STRAFE_GIVE_UP_MS = 2500L;
 
     // ─── Chunk loading ──────────────────────────────────────────
     private long chunkWaitStartMs = -1L;
@@ -330,13 +350,18 @@ public class MacroExecutor {
             if (!stillHasEnemies) {
                 // Exit entity elimination mode and restore state
                 isEliminatingEnemies = false;
-                LOGGER.info("All entities eliminated. Resuming macro from state {} at position {}", 
+                LOGGER.info("All entities eliminated. Resuming macro from state {} at position {}",
                     savedStateBeforeEnemies, savedPositionBeforeEnemies);
                 state = savedStateBeforeEnemies;
                 currentPath = savedPathBeforeEnemies;
                 currentPathIndex = savedPathIndexBeforeEnemies;
                 attackTarget = null;
                 attackChaseStartMs = -1L;
+                // Reset movement timer so the entity-chase duration doesn't
+                // count against the navigation timeout
+                moveStartMs = System.currentTimeMillis();
+                stuckSince  = -1L;
+                lastPosition = player.getPos();
             } else {
                 // Still have enemies - keep attacking, skip state machine
                 if (currentMacro.getConfig().isAttackEnabled()) {
@@ -422,8 +447,26 @@ public class MacroExecutor {
 
         BlockPos goal = step.getDestination();
 
-        // Already at destination?
+        // Already at destination? Require the player to be centered before mining.
         if (PlayerUtils.isArrived(player, goal, currentMacro.getConfig().getArrivalRadius())) {
+            double cdx = player.getX() - (goal.getX() + 0.5);
+            double cdz = player.getZ() - (goal.getZ() + 0.5);
+            double centerDist = Math.sqrt(cdx * cdx + cdz * cdz);
+            if (!isCenteredOnBlock(player, goal)) {
+                long now = System.currentTimeMillis();
+                if (now - lastDebugMs > DEBUG_INTERVAL_MS) {
+                    lastDebugMs = now;
+                    LOGGER.info("[DBG] PATHFINDING->centering: dist={} threshold=0.40 pos=({},{}) dest=({},{})",
+                        String.format("%.3f", centerDist),
+                        String.format("%.2f", player.getX()), String.format("%.2f", player.getZ()),
+                        goal.getX(), goal.getZ());
+                }
+                movementHelper.moveTowards(player, goal);
+                player.setSprinting(false);
+                return;
+            }
+            LOGGER.info("[DBG] PATHFINDING->MINING: centered dist={}", String.format("%.3f", centerDist));
+            movementHelper.releaseAllInputs();
             state = MacroState.MINING;
             currentBlockTargetIndex = 0;
             isMiningBlock = false;
@@ -493,8 +536,26 @@ public class MacroExecutor {
 
         float arrivalRadius = currentMacro.getConfig().getArrivalRadius();
 
-        // Check if we've arrived at the final destination
+        // Check if we've arrived at the final destination (require centering first)
         if (PlayerUtils.isArrived(player, step.getDestination(), arrivalRadius)) {
+            BlockPos dest = step.getDestination();
+            double cdx = player.getX() - (dest.getX() + 0.5);
+            double cdz = player.getZ() - (dest.getZ() + 0.5);
+            double centerDist = Math.sqrt(cdx * cdx + cdz * cdz);
+            if (!isCenteredOnBlock(player, dest)) {
+                long now = System.currentTimeMillis();
+                if (now - lastDebugMs > DEBUG_INTERVAL_MS) {
+                    lastDebugMs = now;
+                    LOGGER.info("[DBG] MOVING->centering: dist={} threshold=0.40 pos=({},{}) dest=({},{})",
+                        String.format("%.3f", centerDist),
+                        String.format("%.2f", player.getX()), String.format("%.2f", player.getZ()),
+                        dest.getX(), dest.getZ());
+                }
+                movementHelper.moveTowards(player, dest);
+                player.setSprinting(false);
+                return;
+            }
+            LOGGER.info("[DBG] MOVING->MINING (isArrived): centered dist={}", String.format("%.3f", centerDist));
             movementHelper.releaseAllInputs();
             state = MacroState.MINING;
             currentBlockTargetIndex = 0;
@@ -503,12 +564,31 @@ public class MacroExecutor {
         }
 
         // Timeout check per tick for movement only (not mining) to prevent getting stuck indefinitely
-        if (System.currentTimeMillis() - moveStartMs > 60000) {
-            LOGGER.warn("Navigation timeout at step {}", currentStepIndex);
+        long elapsedMove = System.currentTimeMillis() - moveStartMs;
+        if (elapsedMove > 60000) {
+            LOGGER.warn("Navigation timeout at step {} (elapsed={}ms moveStartMs={})",
+                currentStepIndex, elapsedMove, moveStartMs);
             sendMessage("macromod.chat.timeout", Formatting.RED);
             movementHelper.releaseAllInputs();
             state = MacroState.ERROR;
             return;
+        }
+        
+        // Periodic debug: position, distance to dest, elapsed time
+        {
+            long now = System.currentTimeMillis();
+            if (now - lastDebugMs > DEBUG_INTERVAL_MS) {
+                lastDebugMs = now;
+                BlockPos dest = step.getDestination();
+                double ddx = player.getX() - (dest.getX() + 0.5);
+                double ddz = player.getZ() - (dest.getZ() + 0.5);
+                double toDest = Math.sqrt(ddx * ddx + ddz * ddz);
+                LOGGER.info("[DBG] MOVING step={} pathIdx={}/{} pos=({},{}) destDist={} elapsed={}ms",
+                    currentStepIndex,
+                    currentPathIndex, currentPath != null ? currentPath.size() : 0,
+                    String.format("%.2f", player.getX()), String.format("%.2f", player.getZ()),
+                    String.format("%.2f", toDest), elapsedMove);
+            }
         }
 
         // Stuck detection (no movement in 3 seconds)
@@ -543,6 +623,31 @@ public class MacroExecutor {
             return;
         }
 
+        // Path already consumed: navigate directly to block center before mining.
+        // MUST be checked before the main path-following block — otherwise on
+        // the second+ centering tick the outer `else { PATHFINDING }` would fire.
+        if (currentPath != null && currentPathIndex >= currentPath.size()) {
+            BlockPos dest = step.getDestination();
+            if (!isCenteredOnBlock(player, dest)) {
+                double cdx3 = player.getX() - (dest.getX() + 0.5);
+                double cdz3 = player.getZ() - (dest.getZ() + 0.5);
+                long now = System.currentTimeMillis();
+                if (now - lastDebugMs > DEBUG_INTERVAL_MS) {
+                    lastDebugMs = now;
+                    LOGGER.info("[DBG] centering dist={}", String.format("%.3f", Math.sqrt(cdx3*cdx3+cdz3*cdz3)));
+                }
+                movementHelper.moveTowards(player, dest);
+                player.setSprinting(false);
+                return;
+            }
+            LOGGER.info("[DBG] centered -> MINING");
+            movementHelper.releaseAllInputs();
+            state = MacroState.MINING;
+            currentBlockTargetIndex = 0;
+            isMiningBlock = false;
+            return;
+        }
+
         // Follow path — keep forward key held through all waypoints for smooth momentum
         if (currentPath != null && currentPathIndex < currentPath.size()) {
             BlockPos nextWaypoint = currentPath.get(currentPathIndex);
@@ -551,20 +656,16 @@ public class MacroExecutor {
             if (movementHelper.hasReachedWaypoint(player, nextWaypoint)) {
                 currentPathIndex++;
                 if (currentPathIndex >= currentPath.size()) {
-                    // Reached the end of the path
-                    movementHelper.releaseAllInputs();
-                    state = MacroState.MINING;
-                    currentBlockTargetIndex = 0;
-                    isMiningBlock = false;
+                    // End of path — the pre-block centering check handles this next tick
                     return;
                 }
                 nextWaypoint = currentPath.get(currentPathIndex);
             }
 
-            // Look-ahead skip: if the player has overshot the current waypoint and is
-            // already past it toward the next one, advance the index without backtracking.
-            // Uses dot product: if projection of player-position onto curr→next exceeds
-            // the segment length, the player is already beyond the current node.
+            // Look-ahead skip: advance the path index when the player is already past
+            // 85% of the current segment — but ONLY for straight sections.
+            // On corners (direction change > ~45°) we skip this so the player
+            // centres on the turn block before changing heading, preventing edge clipping.
             while (currentPathIndex < currentPath.size() - 1) {
                 Vec3d currCenter = net.minecraft.util.math.Vec3d.ofCenter(currentPath.get(currentPathIndex));
                 Vec3d nextCenter = net.minecraft.util.math.Vec3d.ofCenter(currentPath.get(currentPathIndex + 1));
@@ -572,7 +673,26 @@ public class MacroExecutor {
                 Vec3d toPlayer   = player.getPos().subtract(currCenter);
                 double dot       = seg.dotProduct(toPlayer);
                 double segLenSq  = seg.dotProduct(seg);
-                if (dot > segLenSq * 0.85) {   // 85% through segment = skip
+
+                // Corner-ahead check: is there a significant direction change at nextCenter?
+                boolean cornerAhead = false;
+                if (currentPathIndex + 2 < currentPath.size()) {
+                    Vec3d afterNext = net.minecraft.util.math.Vec3d.ofCenter(
+                            currentPath.get(currentPathIndex + 2));
+                    Vec3d segNext = afterNext.subtract(nextCenter);
+                    double segLen   = Math.sqrt(segLenSq);
+                    double nextLen  = segNext.length();
+                    if (segLen > 0.001 && nextLen > 0.001) {
+                        double dirDot = seg.dotProduct(segNext) / (segLen * nextLen);
+                        cornerAhead = dirDot < 0.70; // > ~45° change → treat as corner
+                    }
+                }
+
+                // On corners, let hasReachedWaypoint handle advancement so the
+                // player is truly centred before the heading changes.
+                if (cornerAhead) break;
+
+                if (dot > segLenSq * 0.85) {   // 85% through straight segment = skip
                     currentPathIndex++;
                     nextWaypoint = currentPath.get(currentPathIndex);
                 } else {
@@ -721,6 +841,8 @@ public class MacroExecutor {
         // Skip if Y difference > 3 or horizontal distance > 5
         if (yDiff > 3 || horizontalDist > 5) {
             if (client.options != null) client.options.attackKey.setPressed(false);
+            LOGGER.info("[DBG] mine SKIP range: block={} yDiff={} hDist={}", blockPos,
+                String.format("%.2f", yDiff), String.format("%.2f", horizontalDist));
             target.setSkipped(true);
             blocksSkippedTotal++;
             currentBlockTargetIndex++;
@@ -729,26 +851,72 @@ public class MacroExecutor {
         }
 
         // Aim at the visible face center
-        Vec3d blockCenter = visibleFaceCentre(eyePos, blockPos, player.getBlockPos().getY());
+        Vec3d blockCenter = visibleFaceCentre(eyePos, blockPos, player.getBlockPos().getY(), world);
         movementHelper.lookAt(player, blockCenter, 0.10f);
 
         // Check if block is actually visible (not obstructed by other blocks)
         boolean canSee = BlockUtils.hasLineOfSight(world, eyePos, blockPos);
 
-        // Skip if block is behind other blocks (not visible)
+        // If not visible, try to reposition closer before giving up.
         if (!canSee) {
             if (client.options != null) client.options.attackKey.setPressed(false);
-            target.setSkipped(true);
-            blocksSkippedTotal++;
-            currentBlockTargetIndex++;
-            isMiningBlock = false;
+
+            if (horizontalDist > 1.5) {
+                LOGGER.info("[DBG] mine NO_LOS reposition: block={} hDist={}",
+                    blockPos, String.format("%.2f", horizontalDist));
+                noLOSBlock = null; // reset strafe when we're still far
+                movementHelper.forwardToBlock(player, blockPos);
+                return;
+            }
+
+            // Close but occluded — strafe perpendicular to the block direction
+            // to peek around the obstructing geometry.
+            long now = System.currentTimeMillis();
+            if (noLOSBlock == null || !noLOSBlock.equals(blockPos)) {
+                noLOSBlock = blockPos;
+                noLOSStartMs = now;
+                noLOSStrafeLeft = true;
+            }
+
+            long elapsed = now - noLOSStartMs;
+            if (elapsed > STRAFE_GIVE_UP_MS) {
+                LOGGER.info("[DBG] mine NO_LOS give-up: block={}", blockPos);
+                noLOSBlock = null;
+                target.setSkipped(true);
+                blocksSkippedTotal++;
+                currentBlockTargetIndex++;
+                isMiningBlock = false;
+                return;
+            }
+
+            // Direction from player toward block (XZ), normalized
+            double toBx = blockPos.getX() + 0.5 - player.getX();
+            double toBz = blockPos.getZ() + 0.5 - player.getZ();
+            double toLen = Math.sqrt(toBx * toBx + toBz * toBz);
+            if (toLen > 0.001) { toBx /= toLen; toBz /= toLen; }
+
+            // Perpendicular: left = (-toBz, toBx), right = (toBz, -toBx)
+            boolean strafeLeft = elapsed < STRAFE_SWITCH_MS ? noLOSStrafeLeft : !noLOSStrafeLeft;
+            double sx = strafeLeft ? -toBz :  toBz;
+            double sz = strafeLeft ?  toBx : -toBx;
+
+            // Move 1 block in the strafe direction
+            BlockPos strafeTarget = BlockPos.ofFloored(
+                player.getX() + sx, player.getY(), player.getZ() + sz);
+            LOGGER.info("[DBG] mine NO_LOS strafe {}: block={} elapsed={}ms",
+                strafeLeft ? "LEFT" : "RIGHT", blockPos, elapsed);
+            movementHelper.moveTowards(player, strafeTarget);
             return;
         }
+        // Regained LOS — reset strafe state
+        noLOSBlock = null;
 
         // Move forward if not within reach
         double reachDist = player.getBlockInteractionRange();
         if (!BlockUtils.isWithinReach(eyePos, blockPos, reachDist)) {
             if (client.options != null) client.options.attackKey.setPressed(false);
+            LOGGER.info("[DBG] mine OUT_OF_REACH: block={} hDist={} reach={}", blockPos,
+                String.format("%.2f", horizontalDist), String.format("%.2f", reachDist));
             movementHelper.forwardToBlock(player, blockPos);
             return;
         }
@@ -766,6 +934,13 @@ public class MacroExecutor {
         HitResult crosshair = client.crosshairTarget;
         if (!(crosshair instanceof BlockHitResult bhr) || !bhr.getBlockPos().equals(blockPos)) {
             if (client.options != null) client.options.attackKey.setPressed(false);
+            long now2 = System.currentTimeMillis();
+            if (now2 - lastDebugMs > DEBUG_INTERVAL_MS) {
+                lastDebugMs = now2;
+                String hitInfo = (crosshair instanceof BlockHitResult bhr2)
+                    ? bhr2.getBlockPos().toString() : (crosshair != null ? crosshair.getType().name() : "null");
+                LOGGER.info("[DBG] mine CROSSHAIR_MISS: want={} got={}", blockPos, hitInfo);
+            }
             return;
         }
 
@@ -922,6 +1097,8 @@ public class MacroExecutor {
                 // Move towards a position 3 blocks away from the entity instead of the entity itself
                 BlockPos chasePos = getInterceptPositionAwayFromEntity(player, attackTarget, 3.0);
                 movementHelper.moveTowards(player, chasePos);
+                // Jump over 1-block obstacles (walls, terrain changes) while chasing
+                movementHelper.handleJump(player, chasePos);
             }
         }
     }
@@ -1109,6 +1286,18 @@ public class MacroExecutor {
         return !candidates.isEmpty();
     }
 
+    /**
+     * Returns true when the player's XZ position is within 0.40 blocks of the
+     * block center. 0.40 > WAYPOINT_ARRIVE_RADIUS (0.35), so players arriving
+     * via path-following always pass immediately — no jitter. Players arriving
+     * via the broad isArrived check drift gently to center without oscillating.
+     */
+    private static boolean isCenteredOnBlock(ClientPlayerEntity player, BlockPos dest) {
+        double dx = player.getX() - (dest.getX() + 0.5);
+        double dz = player.getZ() - (dest.getZ() + 0.5);
+        return dx * dx + dz * dz < 0.40 * 0.40;
+    }
+
     private void advanceToNextStep() {
         currentStepIndex++;
         radiusScanDone = false;
@@ -1175,34 +1364,74 @@ public class MacroExecutor {
     }
 
     /**
-     * Returns the centre of the block face that is most directly facing {@code eyePos}.
-     * Picks the axis (X, Y, or Z) along which the eye-to-block-centre vector has the
-     * largest magnitude, then offsets by ±0.5 on that axis in the eye's direction.
-     */
-    /**
-     * Returns the world-space centre of the block face the player should aim at.
+     * Returns the world-space centre of the best minable face for {@code pos}.
      *
-     * Rules (using the player's feet block-Y as reference):
-     *   block at same Y or 0–1 blocks above  → nearest horizontal side face
-     *   block strictly below player Y         → top face  (player looks down)
-     *   block 2+ blocks above player Y        → bottom face (player looks up)
+     * Faces are ranked by priority based on the vertical offset between the block
+     * and the player, then each face is checked for obstruction: if the block
+     * immediately adjacent to that face is solid, it is skipped in favour of the
+     * next candidate. This prevents the crosshair from being aimed at a face that
+     * is physically inaccessible (e.g. ore block below the player with stone on
+     * top of it — the top face is flush against the stone so line-of-sight fails;
+     * a side face should be used instead).
+     *
+     * Priority order:
+     *   block below player  → top → nearest side → second side → bottom
+     *   block same/+1 level → nearest side → second side → top → bottom
+     *   block 2+ above      → bottom → nearest side → second side → top
      */
-    private static Vec3d visibleFaceCentre(Vec3d eye, BlockPos pos, int playerBlockY) {
-        double cx = pos.getX() + 0.5, cy = pos.getY() + 0.5, cz = pos.getZ() + 0.5;
+    private static Vec3d visibleFaceCentre(Vec3d eye, BlockPos pos, int playerBlockY,
+                                            net.minecraft.client.world.ClientWorld world) {
+        double cx = pos.getX() + 0.5;
+        double cy = pos.getY() + 0.5;
+        double cz = pos.getZ() + 0.5;
         int dy = pos.getY() - playerBlockY;
 
+        // XZ direction from block centre to eye
+        double dx = eye.x - cx;
+        double dz = eye.z - cz;
+        boolean xDom = Math.abs(dx) >= Math.abs(dz);
+        int sx = (int) Math.signum(dx); // horizontal offset toward player in X
+        int sz = (int) Math.signum(dz); // horizontal offset toward player in Z
+
+        // Six face centres (outer surface of block)
+        Vec3d fTop    = new Vec3d(cx, pos.getY() + 1.0, cz);
+        Vec3d fBottom = new Vec3d(cx, (double) pos.getY(), cz);
+        Vec3d fSide1  = xDom ? new Vec3d(cx + sx * 0.5, cy, cz)      // nearest horizontal
+                             : new Vec3d(cx, cy, cz + sz * 0.5);
+        Vec3d fSide2  = xDom ? new Vec3d(cx, cy, cz + sz * 0.5)      // second horizontal
+                             : new Vec3d(cx + sx * 0.5, cy, cz);
+
+        // Adjacent block that would obstruct each face
+        BlockPos aTop    = pos.up();
+        BlockPos aBottom = pos.down();
+        BlockPos aSide1  = xDom ? pos.add(sx, 0, 0) : pos.add(0, 0, sz);
+        BlockPos aSide2  = xDom ? pos.add(0, 0, sz) : pos.add(sx, 0, 0);
+
+        // Priority list keyed on vertical offset
+        Vec3d[]    faces;
+        BlockPos[] adjs;
         if (dy < 0) {
-            // Block is below player floor → aim at its top face
-            return new Vec3d(cx, pos.getY() + 1.0, cz);
+            // Block below player: top face preferred → sides → bottom
+            faces = new Vec3d[]    { fTop,  fSide1, fSide2, fBottom };
+            adjs  = new BlockPos[] { aTop,  aSide1, aSide2, aBottom };
+        } else if (dy >= 2) {
+            // Block 2+ above player: bottom face preferred → sides → top
+            faces = new Vec3d[]    { fBottom, fSide1, fSide2, fTop  };
+            adjs  = new BlockPos[] { aBottom, aSide1, aSide2, aTop  };
+        } else {
+            // Same level or 1 above: nearest side preferred → other side → top → bottom
+            faces = new Vec3d[]    { fSide1, fSide2, fTop,  fBottom };
+            adjs  = new BlockPos[] { aSide1, aSide2, aTop,  aBottom };
         }
-        if (dy >= 2) {
-            // Block is 2+ blocks above → aim at its bottom face
-            return new Vec3d(cx, (double) pos.getY(), cz);
+
+        // Return first face whose adjacent block is air (unobstructed)
+        for (int i = 0; i < faces.length; i++) {
+            if (BlockUtils.isAir(world, adjs[i])) {
+                return faces[i];
+            }
         }
-        // Same level or 1 block above → nearest side face
-        double dx = eye.x - cx, dz = eye.z - cz;
-        if (Math.abs(dx) >= Math.abs(dz)) return new Vec3d(cx + Math.signum(dx) * 0.5, cy, cz);
-        return new Vec3d(cx, cy, cz + Math.signum(dz) * 0.5);
+        // All adjacent blocks solid (fully enclosed) — best-effort nearest side
+        return fSide1;
     }
 
     /** Returns a random point within a bounding box (biased toward center vertically). */

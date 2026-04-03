@@ -11,7 +11,7 @@ import com.example.macromod.recording.MacroRecorder;
 import com.example.macromod.recording.RecordingState;
 import com.example.macromod.ui.HudOverlay;
 import com.example.macromod.ui.KeybindHudOverlay;
-import com.example.macromod.ui.MacroScreen;
+import com.example.macromod.ui.easyblock.EasyBlockGui;
 import com.example.macromod.ui.PathDebugRenderer;
 
 import net.fabricmc.api.ClientModInitializer;
@@ -214,7 +214,7 @@ public class MacroModClient implements ClientModInitializer {
         // Open GUI
         while (openGuiKey.wasPressed()) {
             if (client.currentScreen == null) {
-                client.setScreen(new MacroScreen());
+                client.setScreen(new EasyBlockGui());
             }
         }
 

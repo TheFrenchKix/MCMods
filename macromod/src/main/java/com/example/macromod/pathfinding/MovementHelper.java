@@ -31,10 +31,10 @@ public class MovementHelper {
     private static final float SPRINT_YAW_THRESHOLD = 35f;
 
     // ── Waypoint arrival ──────────────────────────────────────
-    // 0.75 block radius: large enough that a player arriving slightly off-axis
-    // (up to ~0.7 blocks from centre) still registers as arrived.
-    private static final double WAYPOINT_ARRIVE_RADIUS_SQ = 0.75 * 0.75;
-    private static final double WAYPOINT_ARRIVE_DY        = 1.0;
+    // 0.35 block radius: tight enough to force the player near block centre
+    // before advancing, preventing edge-clipping on narrow paths.
+    private static final double WAYPOINT_ARRIVE_RADIUS_SQ = 0.35 * 0.35;
+    private static final double WAYPOINT_ARRIVE_DY        = 0.5;
 
     // ── Jump / stuck detection ───────────────────────────────────
     private static final long   STUCK_JUMP_MS             = 550L;
@@ -204,9 +204,8 @@ public class MovementHelper {
         // Detect if approaching diagonally (both dx and dz components significant)
         boolean isDiagonalApproach = Math.abs(dx) > 0.3 && Math.abs(dz) > 0.3;
         
-        // Use slightly more lenient radius for diagonal approaches to prevent oscillation
-        // 0.85 instead of 0.75 blocks for diagonals
-        double radiusSq = isDiagonalApproach ? 0.85 * 0.85 : WAYPOINT_ARRIVE_RADIUS_SQ;
+        // Slightly more lenient for diagonal approaches to prevent oscillation
+        double radiusSq = isDiagonalApproach ? 0.50 * 0.50 : WAYPOINT_ARRIVE_RADIUS_SQ;
         
         return (dx * dx + dz * dz) <= radiusSq && dy <= WAYPOINT_ARRIVE_DY;
     }

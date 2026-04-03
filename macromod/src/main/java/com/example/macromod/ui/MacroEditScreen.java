@@ -4,6 +4,11 @@ import com.example.macromod.MacroModClient;
 import com.example.macromod.model.Macro;
 import com.example.macromod.model.MacroConfig;
 import com.example.macromod.model.MacroStep;
+import com.example.macromod.ui.easyblock.Anim;
+import com.example.macromod.ui.easyblock.BasePopupScreen;
+import com.example.macromod.ui.easyblock.EasyBlockGui;
+import com.example.macromod.ui.easyblock.RoundedRectRenderer;
+import com.example.macromod.ui.easyblock.ToggleRenderer;
 import net.fabricmc.api.EnvType;
 import net.fabricmc.api.Environment;
 import net.minecraft.client.MinecraftClient;
@@ -14,693 +19,609 @@ import net.minecraft.entity.LivingEntity;
 import net.minecraft.registry.Registries;
 import net.minecraft.text.Text;
 import net.minecraft.util.math.BlockPos;
-import net.minecraft.util.math.Box;
 
 import java.util.ArrayList;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
 
+/**
+ * Macro editor — popup screen with scrollable left panel and responsive layout.
+ *
+ * Layout:
+ *   ┌──────────────────────────────────┐
+ *   │  Header (HH px)                  │
+ *   ├─────────────────┬────────────────│
+ *   │ [Fixed: fields] │  Steps list    │
+ *   │─────────────────│  (scrollable)  │
+ *   │ [Scrollable:    │                │
+ *   │  Config/Timing/ │                │
+ *   │  Attack/WL]     │                │
+ *   ├─────────────────┴────────────────│
+ *   │  Footer: Save / Cancel           │
+ *   └──────────────────────────────────┘
+ */
 @Environment(EnvType.CLIENT)
-public class MacroEditScreen extends Screen {
+public class MacroEditScreen extends BasePopupScreen {
 
-    // ── Colours (same palette as MacroScreen) ──────────────────
-    private static final int C_BACKDROP  = 0xB8000000;
-    private static final int C_PANEL     = 0xFF131320;
-    private static final int C_HEADER    = 0xFF0A0A14;
-    private static final int C_DIVIDER   = 0xFF1E1E3A;
-    private static final int C_FIELD_BG  = 0xFF0E0E1C;
-    private static final int C_GREEN     = 0xFF0A6E32;
-    private static final int C_GREEN_H   = 0xFF0CA844;
-    private static final int C_RED       = 0xFF6E1010;
-    private static final int C_RED_H     = 0xFFAA1818;
-    private static final int C_BLUE      = 0xFF1A3E6E;
-    private static final int C_BLUE_H    = 0xFF2460A8;
-    private static final int C_TEXT      = 0xFFFFFFFF;
-    private static final int C_TEXT_SEC  = 0xFFAAAAAA;
-    private static final int C_TEXT_DIM  = 0xFF555570;
-    private static final int C_ACCENT    = 0xFF55DDFF;
+    // ── Layout constants ──────────────────────────────────────────────
+    private static final int HH = 36, FH = 40, R = 8, RB = 5;
+    private static final int ROW_GAP = 4;
+    private static final int EL_ROW_H = 20;   // entity whitelist row height
 
-    // ── Layout ─────────────────────────────────────────────────
-    private static final int HEADER_H = 38;
-    private static final int FOOTER_H = 38;
-    private static final int LEFT_W   = 380;
-    private static final int BTN_H    = 22;
-    private static final int SA_W     = 68;
-    private static final int FB_W     = 90;
+    // Computed each init()
+    private int px, py, pw, ph, lw;
 
-    // ── Data ───────────────────────────────────────────────────
-    private final Macro  macro;
-    private final Screen parent;
-
-    private String  editName;
-    private String  editDescription;
-    private boolean editLoop;
-    private boolean editSkipMismatch;
-    private boolean editAttackDanger;
-    private int     editAttackCPS;
-    private int     editMiningDelay;
-    private int     editMoveTimeout;
+    // ── Edit state ────────────────────────────────────────────────────
+    private final Macro macro;
+    private String  editName, editDesc;
+    private boolean editLoop, editSkipMismatch, editAttackDanger, editOnlyGround, editLockCam;
+    private int     editAttackCPS, editMiningDelay, editMoveTimeout;
     private float   editArrivalRadius;
+    private boolean editAttackEnabled, editAttackWlOnly;
+    private final List<String> editAttackWl = new ArrayList<>();
+    private int     editAttackRange;
 
-    // ── Attack ─────────────────────────────────────────────────
-    private boolean editAttackEnabled      = false;
-    private boolean editAttackWhitelistOnly = false;
-    private final List<String> editAttackWhitelist = new ArrayList<>();
-    private int     editAttackRange        = 10;
+    // ── Toggle animations ─────────────────────────────────────────────
+    private final float[] tgAnim = new float[7];
 
-    // ── Pathfinder options ──────────────────────────────────────
-    private boolean editOnlyGround = false;
-    private boolean editLockCrosshair = false;
+    // ── Left panel scroll ─────────────────────────────────────────────
+    private int leftScroll    = 0;
+    private int leftScrollMax = 0;
+    /** Y coord where the scrollable section starts (computed each frame). */
+    private int scrollStartY  = 0;
 
-    // Entity list state (refreshed each render when whitelist visible)
-    private final List<String> nearbyEntityTypes = new ArrayList<>();
-    private int     entityListScroll        = 0;
-    private int     entityListX0, entityListY0, entityListW;
-    private int     entityListItemH         = 15;
-    private int     entityListVisibleCount  = 4;
-    private final List<String> entityListVisible = new ArrayList<>();
+    // ── Text fields ───────────────────────────────────────────────────
+    private TextFieldWidget nameField, descField;
 
-    // ── Step list ──────────────────────────────────────────────
-    private int stepScrollOffset  = 0;
-    private int selectedStepIndex = -1;
+    // ── Step list ─────────────────────────────────────────────────────
+    private int stepScroll = 0, selStep = -1;
 
-    // ── Panel bounds ───────────────────────────────────────────
-    private int panelX, panelY, panelW, panelH;
-    private int nameFieldBodyY;
-    private int nameFieldY;
-    private int descFieldY;
+    // ── Hit-area caches (set during render, read during click) ────────
+    private final int[][] tgBounds  = new int[7][4];  // [idx][x,y,w,h], w<0 = inactive
+    private final int[][] cycBounds = new int[4][4];  // [idx][lbx,rbx,y, active?]
+    private int atkRngLbx = -1, atkRngRbx = -1, atkRngY = -1;
+    private int stepBtnY;
+    private final int[] stepBtnX = new int[4];
+    private int stepBtnW, stepBtnH;
+    private int saveX, cancelX, footerBtnY, fbW = 90, fbH = 24;
+    /** Entity whitelist: list shown this frame + their rendered Y start. */
+    private final List<String> elShown = new ArrayList<>();
+    private int elX, elRowY0, elW;
 
-    // ── Widgets ────────────────────────────────────────────────
-    private TextFieldWidget nameField;
-    private TextFieldWidget descriptionField;
+    // ── Hover states ─────────────────────────────────────────────────
+    private boolean hoverSave, hoverCancel;
+    private boolean hoverAdd, hoverUp, hoverDown, hoverRem;
 
-    // ── Hit areas ──────────────────────────────────────────────
-    /** chipBounds[i] = {x, y, w}  –  Loop / SkipMismatch / AttackDanger / OnlyGround / LockCamera */
-    private final int[][] chipBounds   = new int[5][3];
-    /** cyclerBounds[i] = {leftBtnX, rightBtnX, y}  –  Delay / Timeout / Radius */
-    private final int[][] cyclerBounds = new int[4][3];
-    /** attackChipBounds[0]=attack toggle, [1]=mode chip */
-    private final int[][] attackChipBounds = new int[2][3];
-    /** attackRangeBounds = {leftX, rightX, y} */
-    private final int[] attackRangeBounds = new int[3];
-
-    private int   stepActY;
-    private final int[] stepActX = new int[4];
-    private int   footerBtnY, saveX, cancelX;
-
-    // ── Per-frame hover flags ──────────────────────────────────
-    private boolean hoverClose, hoverSave, hoverCancel;
-    private boolean hoverAddStep, hoverMoveUp, hoverMoveDown, hoverRemStep;
-
+    // ─────────────────────────────────────────────────────────────────
     public MacroEditScreen(Macro macro, Screen parent) {
-        super(Text.literal("Edit Macro"));
-        this.macro  = macro;
-        this.parent = parent;
-
-        editName        = macro.getName();
-        editDescription = macro.getDescription() != null ? macro.getDescription() : "";
-        MacroConfig cfg = macro.getConfig();
-        editLoop         = cfg.isLoop();
-        editSkipMismatch = cfg.isSkipMismatch();
-        editAttackDanger = cfg.isAttackDanger();
-        editAttackCPS    = cfg.getAttackCPS();
-        editOnlyGround   = cfg.isOnlyGround();
-        editLockCrosshair = cfg.isLockCrosshair();
-        editMiningDelay  = cfg.getMiningDelay();
-        editMoveTimeout  = cfg.getMoveTimeout();
-        editArrivalRadius = cfg.getArrivalRadius();
-        editAttackEnabled      = cfg.isAttackEnabled();
-        editAttackWhitelistOnly = cfg.isAttackWhitelistOnly();
-        editAttackWhitelist.clear();
-        editAttackWhitelist.addAll(cfg.getAttackWhitelist());
-        editAttackRange = cfg.getAttackRange();
+        super(Text.literal("Edit: " + macro.getName()), parent);
+        this.macro = macro;
+        MacroConfig c = macro.getConfig();
+        editName          = macro.getName();
+        editDesc          = macro.getDescription() != null ? macro.getDescription() : "";
+        editLoop          = c.isLoop();
+        editSkipMismatch  = c.isSkipMismatch();
+        editAttackDanger  = c.isAttackDanger();
+        editOnlyGround    = c.isOnlyGround();
+        editLockCam       = c.isLockCrosshair();
+        editAttackCPS     = c.getAttackCPS();
+        editMiningDelay   = c.getMiningDelay();
+        editMoveTimeout   = c.getMoveTimeout();
+        editArrivalRadius = c.getArrivalRadius();
+        editAttackEnabled = c.isAttackEnabled();
+        editAttackWlOnly  = c.isAttackWhitelistOnly();
+        editAttackWl.addAll(c.getAttackWhitelist());
+        editAttackRange   = c.getAttackRange();
+        boolean[] v = {editLoop, editSkipMismatch, editAttackDanger, editOnlyGround,
+                editLockCam, editAttackEnabled, editAttackWlOnly};
+        for (int i = 0; i < 7; i++) tgAnim[i] = v[i] ? 1f : 0f;
     }
 
-    // ═══════════════════════════════════════════════════════════════
-    // Init
-    // ═══════════════════════════════════════════════════════════════
-
+    // ═════════════════════════════════════════════════════════════════
+    // Init — called on open and every resize
+    // ═════════════════════════════════════════════════════════════════
     @Override
     protected void init() {
-        panelW = Math.min(this.width  - 40, 920);
-        panelH = Math.min(this.height - 40, 560);
-        panelX = (this.width  - panelW) / 2;
-        panelY = (this.height - panelH) / 2;
+        // Responsive sizing: fills up to 900×540, always leaves 40px margin
+        pw = Math.min(900, Math.max(400, width  - 40));
+        ph = Math.min(540, Math.max(280, height - 40));
+        px = (width  - pw) / 2;
+        py = (height - ph) / 2;
+        lw = pw * 44 / 100;  // 44% → left panel
 
-        nameFieldBodyY = panelY + HEADER_H + 8;
-        int fieldW = LEFT_W - 28;
-        int leftX  = panelX + 14;
+        int fx = px + 14, fw = lw - 26;
+        int nameY = py + HH + 26;
+        int descY = py + HH + 60;
 
-        nameFieldY = nameFieldBodyY + 22;
-        nameField  = new TextFieldWidget(textRenderer, leftX, nameFieldY, fieldW, 18, Text.literal("Name"));
+        // Create text fields — NOT added as drawables (we render them manually
+        // inside drawScreen so they stay inside the popup scale transform).
+        nameField = new TextFieldWidget(textRenderer, fx, nameY, fw, 16, Text.literal("Name"));
         nameField.setMaxLength(64);
         nameField.setText(editName);
         nameField.setChangedListener(s -> editName = s);
+        nameField.setDrawsBackground(false);
         addSelectableChild(nameField);
-        addDrawable(nameField);
 
-        descFieldY = nameFieldBodyY + 62;
-        descriptionField = new TextFieldWidget(textRenderer, leftX, descFieldY, fieldW, 18, Text.literal("Description"));
-        descriptionField.setMaxLength(256);
-        descriptionField.setText(editDescription);
-        descriptionField.setChangedListener(s -> editDescription = s);
-        addSelectableChild(descriptionField);
-        addDrawable(descriptionField);
+        descField = new TextFieldWidget(textRenderer, fx, descY, fw, 16, Text.literal("Description"));
+        descField.setMaxLength(256);
+        descField.setText(editDesc);
+        descField.setChangedListener(s -> editDesc = s);
+        descField.setDrawsBackground(false);
+        addSelectableChild(descField);
     }
 
-    // ═══════════════════════════════════════════════════════════════
-    // Render
-    // ═══════════════════════════════════════════════════════════════
-
+    // ═════════════════════════════════════════════════════════════════
+    // drawScreen — called by BasePopupScreen inside the scale transform
+    // ═════════════════════════════════════════════════════════════════
     @Override
-    public void renderBackground(DrawContext ctx, int mx, int my, float delta) {
-        // no-op: we draw our own background in render()
-    }
+    protected void drawScreen(DrawContext ctx, int mx, int my, float delta) {
+        // Animate toggles per-frame
+        boolean[] vals = {editLoop, editSkipMismatch, editAttackDanger, editOnlyGround,
+                editLockCam, editAttackEnabled, editAttackWlOnly};
+        for (int i = 0; i < 7; i++) tgAnim[i] = Anim.smooth(tgAnim[i], vals[i] ? 1f : 0f, 20f);
 
-    @Override
-    public void render(DrawContext ctx, int mx, int my, float delta) {
-        // Background + panel shell
-        ctx.fill(0, 0, this.width, this.height, C_BACKDROP);
-        ctx.fill(panelX, panelY, panelX + panelW, panelY + panelH, C_PANEL);
-        ctx.fill(panelX, panelY, panelX + panelW, panelY + HEADER_H, C_HEADER);
+        // Reset hit caches
+        for (int[] b : tgBounds)  b[2] = -1;
+        for (int[] c : cycBounds) c[3] = 0;
+        atkRngY = -1;
+        hoverSave = hoverCancel = hoverAdd = hoverUp = hoverDown = hoverRem = false;
 
-        // Structural dividers
-        int hDiv = panelY + HEADER_H;
-        int vDiv = panelX + LEFT_W;
-        int fDiv = panelY + panelH - FOOTER_H;
-        ctx.fill(panelX, hDiv, panelX + panelW, hDiv + 1, C_DIVIDER);
-        ctx.fill(vDiv,   panelY, vDiv + 1, panelY + panelH, C_DIVIDER);
-        ctx.fill(panelX, fDiv, panelX + panelW, fDiv + 1, C_DIVIDER);
+        // Panel background
+        RoundedRectRenderer.draw(ctx, px, py, pw, ph, R, EasyBlockGui.C_BG);
 
-        renderHeader(ctx, mx, my);
-        renderLeftPanel(ctx, mx, my);
-        renderRightPanel(ctx, mx, my);
-        renderFooter(ctx, mx, my);
-
-        // Draw MC text-field widgets last so they appear on top
-        super.render(ctx, mx, my, delta);
-    }
-
-    // ── Header ───────────────────────────────────────────────────
-
-    private void renderHeader(DrawContext ctx, int mx, int my) {
+        // Header
+        ctx.fill(px, py, px + pw, py + HH, 0xFF101018);
+        ctx.fill(px, py + HH - 1, px + pw, py + HH, EasyBlockGui.C_DIVIDER);
         ctx.drawTextWithShadow(textRenderer,
-                Text.literal("\u00a7b\u2756 \u00a7fEdit: \u00a7b" + macro.getName()),
-                panelX + 10, panelY + 12, C_TEXT);
+                Text.literal("\u00A7e\u2605 \u00A7f\u00A7lEdit: " + macro.getName()),
+                px + 14, py + (HH - 8) / 2, EasyBlockGui.C_TEXT);
 
-        int cx = panelX + panelW - 26, cy = panelY + 9;
-        hoverClose = mx >= cx && mx < cx + 18 && my >= cy && my < cy + 18;
-        ctx.fill(cx, cy, cx + 18, cy + 18, hoverClose ? C_RED_H : C_RED);
-        ctx.drawCenteredTextWithShadow(textRenderer, Text.literal("\u2715"), cx + 9, cy + 5, C_TEXT);
+        // Dividers
+        ctx.fill(px + lw, py + HH, px + lw + 1, py + ph, EasyBlockGui.C_DIVIDER);
+        ctx.fill(px, py + ph - FH, px + pw, py + ph - FH + 1, EasyBlockGui.C_DIVIDER);
+
+        drawLeftPanel(ctx, mx, my);
+        drawRightPanel(ctx, mx, my);
+        drawFooter(ctx, mx, my);
     }
 
-    // ── Left panel ───────────────────────────────────────────────
+    // ═════════════════════════════════════════════════════════════════
+    // Left panel
+    // ═════════════════════════════════════════════════════════════════
+    private void drawLeftPanel(DrawContext ctx, int mx, int my) {
+        int x   = px + 14;
+        int re  = px + lw - 4;   // right edge for controls
+        int fw  = lw - 26;
+        int dy  = py + HH + 8;
 
-    private void renderLeftPanel(DrawContext ctx, int mx, int my) {
-        int x  = panelX + 14;
-        int y0 = nameFieldBodyY;
-
-        // Field labels (TextFieldWidgets draw themselves)
-        ctx.drawTextWithShadow(textRenderer, Text.literal("\u00a77Name"),        x, y0 + 10, C_TEXT_SEC);
-        ctx.drawTextWithShadow(textRenderer, Text.literal("\u00a77Description"), x, y0 + 50, C_TEXT_SEC);
-
-        // Config section
-        int dy = y0 + 88;
-        ctx.fill(x, dy, panelX + LEFT_W - 10, dy + 1, C_DIVIDER);
-        dy += 8;
-        ctx.drawTextWithShadow(textRenderer, Text.literal("\u00a7bConfig"), x, dy, C_ACCENT);
-        dy += 14;
-
-        dy = renderChip(ctx, mx, my, x, dy, "Loop",           editLoop,         false, 0) + 5;
-        dy = renderChip(ctx, mx, my, x, dy, "Skip Mismatch",  editSkipMismatch, false, 1) + 5;
-        dy = renderChip(ctx, mx, my, x, dy, "Attack Danger",  editAttackDanger, true,  2) + 5;
-        dy = renderChip(ctx, mx, my, x, dy, "Only Ground",    editOnlyGround,   false, 3) + 5;
-        dy = renderChip(ctx, mx, my, x, dy, "Lock Crosshair", editLockCrosshair, false, 4) + 8;
-
-        // Attack CPS slider (when Attack Danger is enabled)
-        if (editAttackDanger) {
-            dy = renderCycler(ctx, mx, my, x, dy, "Attack CPS", editAttackCPS + " cps", 3) + 4;
-        }
-
-        // Numeric section
-        ctx.fill(x, dy, panelX + LEFT_W - 10, dy + 1, C_DIVIDER);
-        dy += 8;
-        ctx.drawTextWithShadow(textRenderer, Text.literal("\u00a7bNumeric"), x, dy, C_ACCENT);
-        dy += 14;
-
-        dy = renderCycler(ctx, mx, my, x, dy, "Mining Delay",   editMiningDelay + " ms",                       0) + 4;
-        dy = renderCycler(ctx, mx, my, x, dy, "Move Timeout",   editMoveTimeout + " ticks",                    1) + 4;
-        dy = renderCycler(ctx, mx, my, x, dy, "Arrival Radius", String.format("%.1f blk", editArrivalRadius),  2) + 8;
-
-        renderAttackSection(ctx, mx, my, x, dy);
-    }
-
-    // ─────────────────────────────────────────────────────────────────────────
-    // Attack section renderer
-    // ─────────────────────────────────────────────────────────────────────────
-
-    private void renderAttackSection(DrawContext ctx, int mx, int my, int x, int dy) {
-        ctx.fill(x, dy, panelX + LEFT_W - 10, dy + 1, C_DIVIDER);
-        dy += 8;
-        ctx.drawTextWithShadow(textRenderer, Text.literal("\u00a7cAttack"), x, dy, C_ACCENT);
-        dy += 14;
-
-        // ── Attack toggle chip (index 0) ──────────────────────────────────
-        String toggleText = "Attack  " + (editAttackEnabled ? "\u00a7aON" : "\u00a7cOFF");
-        int toggleW = textRenderer.getWidth(toggleText) + 14;
-        boolean hov0 = mx >= x && mx < x + toggleW && my >= dy && my < dy + 16;
-        int bg0 = editAttackEnabled
-            ? (hov0 ? C_GREEN_H : C_GREEN)
-            : (hov0 ? C_RED_H   : C_RED);
-        ctx.fill(x, dy, x + toggleW, dy + 16, bg0);
-        ctx.drawTextWithShadow(textRenderer, Text.literal(toggleText), x + 7, dy + 4, 0xFFFFFFFF);
-        attackChipBounds[0][0] = x; attackChipBounds[0][1] = dy; attackChipBounds[0][2] = toggleW;
-        dy += 20;
-
-        if (!editAttackEnabled) return;
-
-        // ── Mode chip ALL / WHITELIST (index 1) ──────────────────────────
-        String modeText = "Mode: " + (editAttackWhitelistOnly ? "\u00a7eWHITELIST" : "\u00a77ALL");
-        int modeW = textRenderer.getWidth(modeText) + 14;
-        boolean hov1 = mx >= x && mx < x + modeW && my >= dy && my < dy + 16;
-        int bgMode = hov1 ? 0xFF3A3A5A : 0xFF22223A;
-        ctx.fill(x, dy, x + modeW, dy + 16, bgMode);
-        ctx.drawTextWithShadow(textRenderer, Text.literal(modeText), x + 7, dy + 4, 0xFFFFFFFF);
-        attackChipBounds[1][0] = x; attackChipBounds[1][1] = dy; attackChipBounds[1][2] = modeW;
+        // ── Fixed section: Name + Description ─────────────────────────
+        ctx.drawTextWithShadow(textRenderer, Text.literal("Name"), x, dy, EasyBlockGui.C_TEXT2);
+        dy += 12;
+        ctx.fill(x - 2, dy - 1, x + fw + 2, dy + 17, EasyBlockGui.C_CARD);
+        // Focus indicator underline
+        ctx.fill(x - 2, dy + 16, x + fw + 2, dy + 17,
+                nameField.isFocused() ? EasyBlockGui.C_ACCENT : EasyBlockGui.C_DIVIDER);
+        nameField.setPosition(x, dy);
+        nameField.setWidth(fw);
+        nameField.render(ctx, mx, my, 0f);
         dy += 22;
 
-        // ── Range inline cycler ──────────────────────────────────────────
-        ctx.drawTextWithShadow(textRenderer, Text.literal("Range: \u00a7f" + editAttackRange + " blk"), x, dy + 4, 0xFFAAAAAA);
-        int rightEdge = panelX + LEFT_W - 10;
-        String rangeVal = "\u00a7a" + editAttackRange + "\u00a7r blk";
-        int valW = textRenderer.getWidth(rangeVal);
-        int leftBtnX  = rightEdge - valW - 28;
-        int rightBtnX = rightEdge - 12;
-        boolean hovRL = mx >= leftBtnX  && mx < leftBtnX + 14  && my >= dy && my < dy + 16;
-        boolean hovRR = mx >= rightBtnX && mx < rightBtnX + 14 && my >= dy && my < dy + 16;
-        ctx.fill(leftBtnX,  dy, leftBtnX  + 14, dy + 14, hovRL ? 0xFF444466 : 0xFF2A2A44);
-        ctx.fill(rightBtnX, dy, rightBtnX + 14, dy + 14, hovRR ? 0xFF444466 : 0xFF2A2A44);
-        ctx.drawTextWithShadow(textRenderer, Text.literal("<"), leftBtnX  + 3, dy + 3, 0xFFFFFFFF);
-        ctx.drawTextWithShadow(textRenderer, Text.literal(">"), rightBtnX + 3, dy + 3, 0xFFFFFFFF);
-        ctx.drawTextWithShadow(textRenderer, Text.literal(rangeVal), rightBtnX - valW - 4, dy + 3, 0xFFFFFFFF);
-        attackRangeBounds[0] = leftBtnX; attackRangeBounds[1] = rightBtnX; attackRangeBounds[2] = dy;
-        dy += 20;
+        ctx.drawTextWithShadow(textRenderer, Text.literal("Description"), x, dy, EasyBlockGui.C_TEXT2);
+        dy += 12;
+        ctx.fill(x - 2, dy - 1, x + fw + 2, dy + 17, EasyBlockGui.C_CARD);
+        ctx.fill(x - 2, dy + 16, x + fw + 2, dy + 17,
+                descField.isFocused() ? EasyBlockGui.C_ACCENT : EasyBlockGui.C_DIVIDER);
+        descField.setPosition(x, dy);
+        descField.setWidth(fw);
+        descField.render(ctx, mx, my, 0f);
+        dy += 22;
 
-        if (!editAttackWhitelistOnly) return;
+        // Separator
+        ctx.fill(x, dy + 2, re, dy + 3, EasyBlockGui.C_DIVIDER);
+        dy += 8;
 
-        // ── Entity whitelist ──────────────────────────────────────────────
-        ctx.drawTextWithShadow(textRenderer, Text.literal("\u00a77Entity whitelist (nearby):"), x, dy, 0xFFAAAAAA);
-        dy += 13;
+        // Store where scrollable section begins
+        scrollStartY = dy;
+        int scrollBot = py + ph - FH - 4;
+        int visH      = scrollBot - scrollStartY;
 
-        refreshNearbyEntityTypes();
-        int listW = panelX + LEFT_W - 10 - x;
-        entityListX0 = x; entityListY0 = dy; entityListW = listW;
-        entityListItemH = 15;
-        entityListVisibleCount = 4;
-        entityListScroll = Math.max(0, Math.min(entityListScroll,
-            Math.max(0, nearbyEntityTypes.size() - entityListVisibleCount)));
-        entityListVisible.clear();
-        for (int i = entityListScroll;
-             i < nearbyEntityTypes.size() && entityListVisible.size() < entityListVisibleCount; i++) {
-            entityListVisible.add(nearbyEntityTypes.get(i));
-        }
-        for (int i = 0; i < entityListVisible.size(); i++) {
-            String id = entityListVisible.get(i);
-            int ey = dy + i * entityListItemH;
-            boolean inList = editAttackWhitelist.contains(id);
-            boolean hovRow = mx >= x && mx < x + listW && my >= ey && my < ey + entityListItemH;
-            ctx.fill(x, ey, x + listW, ey + entityListItemH - 1,
-                hovRow ? 0xFF2A2A44 : 0xFF1A1A30);
-            if (inList) {
-                ctx.fill(x, ey, x + 3, ey + entityListItemH - 1, 0xFF44CC44);
+        // ── Scrollable section with scissor clipping ──────────────────
+        ctx.enableScissor(px, scrollStartY, px + lw, scrollBot);
+        int sy = scrollStartY - leftScroll;
+
+        // Config
+        sy = section(ctx, x, re, sy, "Config", EasyBlockGui.C_ACCENT);
+        sy = toggle(ctx, mx, my, x, re, sy, "Loop",           tgAnim[0], 0) + ROW_GAP;
+        sy = toggle(ctx, mx, my, x, re, sy, "Skip Mismatch",  tgAnim[1], 1) + ROW_GAP;
+        sy = toggle(ctx, mx, my, x, re, sy, "Attack Danger",  tgAnim[2], 2) + ROW_GAP;
+        sy = toggle(ctx, mx, my, x, re, sy, "Only Ground",    tgAnim[3], 3) + ROW_GAP;
+        sy = toggle(ctx, mx, my, x, re, sy, "Lock Camera",    tgAnim[4], 4) + 8;
+
+        // Timing
+        sy = section(ctx, x, re, sy, "Timing", EasyBlockGui.C_ACCENT);
+        sy = cycler(ctx, mx, my, x, re, sy, "Mining Delay",   editMiningDelay + " ms",               0) + ROW_GAP;
+        sy = cycler(ctx, mx, my, x, re, sy, "Move Timeout",   editMoveTimeout + " ms",               1) + ROW_GAP;
+        sy = cycler(ctx, mx, my, x, re, sy, "Arrival Radius", String.format("%.1f blk", editArrivalRadius), 2) + 8;
+
+        // Attack
+        sy = section(ctx, x, re, sy, "Attack", EasyBlockGui.C_DANGER);
+        sy = toggle(ctx, mx, my, x, re, sy, "Enable Attack", tgAnim[5], 5) + ROW_GAP;
+
+        if (editAttackEnabled) {
+            if (editAttackDanger) {
+                sy = cycler(ctx, mx, my, x, re, sy, "Attack CPS", editAttackCPS + " CPS", 3) + ROW_GAP;
             }
-            String display = id.contains(":") ? id.substring(id.indexOf(':') + 1) : id;
-            display = Character.toUpperCase(display.charAt(0)) + display.substring(1).replace('_', ' ');
-            ctx.drawTextWithShadow(textRenderer, Text.literal((inList ? "\u00a7a" : "\u00a77") + display),
-                x + 6, ey + 3, 0xFFFFFFFF);
-        }
-        int totalH = entityListVisibleCount * entityListItemH;
-        ctx.fill(x, dy + totalH, x + listW, dy + totalH + 1, C_DIVIDER);
+            sy = toggle(ctx, mx, my, x, re, sy, "Whitelist only", tgAnim[6], 6) + ROW_GAP;
 
-        // scroll hints
-        if (entityListScroll > 0) {
-            ctx.drawTextWithShadow(textRenderer, Text.literal("\u00a77\u2191"), x + listW - 10, dy, 0xFFFFFFFF);
+            // Range
+            sy = rangeRow(ctx, mx, my, x, re, sy) + ROW_GAP;
+
+            // Entity whitelist
+            if (editAttackWlOnly) {
+                sy = entityList(ctx, mx, my, x, re, sy);
+            }
         }
-        if (entityListScroll + entityListVisibleCount < nearbyEntityTypes.size()) {
-            ctx.drawTextWithShadow(textRenderer, Text.literal("\u00a77\u2193"),
-                x + listW - 10, dy + (entityListVisibleCount - 1) * entityListItemH, 0xFFFFFFFF);
+
+        ctx.disableScissor();
+
+        // Update scroll max from total rendered height
+        int totalContentH = (sy + leftScroll) - scrollStartY;
+        leftScrollMax = Math.max(0, totalContentH - visH);
+        leftScroll    = Math.min(leftScroll, leftScrollMax);
+
+        // Scrollbar
+        if (leftScrollMax > 0) {
+            int trackX = px + lw - 5, trackH = visH;
+            ctx.fill(trackX, scrollStartY, trackX + 3, scrollStartY + trackH, EasyBlockGui.C_DIVIDER);
+            int thumbH = Math.max(16, trackH * visH / Math.max(1, totalContentH));
+            int thumbY = scrollStartY + (int)((long) leftScroll * (trackH - thumbH) / leftScrollMax);
+            ctx.fill(trackX, thumbY, trackX + 3, thumbY + thumbH, EasyBlockGui.C_ACCENT);
         }
     }
 
-    private void refreshNearbyEntityTypes() {
-        MinecraftClient client = MinecraftClient.getInstance();
-        if (client.world == null || client.player == null) return;
+    // ── Section header ────────────────────────────────────────────────
+    private int section(DrawContext ctx, int x, int re, int y, String title, int accent) {
+        ctx.fill(x, y, re, y + 1, EasyBlockGui.C_DIVIDER);
+        ctx.drawTextWithShadow(textRenderer, Text.literal(title), x, y + 5, EasyBlockGui.C_TEXT);
+        RoundedRectRenderer.draw(ctx, x, y + 17, textRenderer.getWidth(title), 2, 1, accent);
+        return y + 24;
+    }
+
+    // ── Toggle row ────────────────────────────────────────────────────
+    private int toggle(DrawContext ctx, int mx, int my, int x, int re, int y,
+                       String label, float anim, int idx) {
+        int tW = ToggleRenderer.TOGGLE_W, tH = ToggleRenderer.TOGGLE_H;
+        int rowH = tH + 4;
+        ctx.drawTextWithShadow(textRenderer, Text.literal(label), x, y + (rowH - 8) / 2, EasyBlockGui.C_TEXT);
+        int tgX = re - tW - 2, tgY = y + (rowH - tH) / 2;
+        ToggleRenderer.draw(ctx, tgX, tgY, anim);
+        tgBounds[idx][0] = tgX; tgBounds[idx][1] = tgY;
+        tgBounds[idx][2] = tW;  tgBounds[idx][3] = tH;
+        return y + rowH;
+    }
+
+    // ── Cycler row (< value >) ────────────────────────────────────────
+    private int cycler(DrawContext ctx, int mx, int my, int x, int re, int y,
+                       String label, String val, int idx) {
+        ctx.drawTextWithShadow(textRenderer, Text.literal(label), x, y + 5, EasyBlockGui.C_TEXT2);
+        int bw = 14, vh = 18;
+        int valW = textRenderer.getWidth(val) + 10;
+        int rbx  = re - bw - 2;
+        int lbx  = rbx - valW - 2 - bw;
+        boolean hl = hit(mx, my, lbx, y, bw, vh), hr = hit(mx, my, rbx, y, bw, vh);
+        RoundedRectRenderer.draw(ctx, lbx,       y, bw,   vh, RB, hl ? EasyBlockGui.C_NAV_ACT : EasyBlockGui.C_NAV_BG);
+        RoundedRectRenderer.draw(ctx, lbx+bw+2,  y, valW, vh, RB, EasyBlockGui.C_CARD);
+        RoundedRectRenderer.draw(ctx, rbx,        y, bw,   vh, RB, hr ? EasyBlockGui.C_NAV_ACT : EasyBlockGui.C_NAV_BG);
+        ctx.drawCenteredTextWithShadow(textRenderer, Text.literal("\u2039"), lbx + bw/2, y + 5, EasyBlockGui.C_TEXT);
+        ctx.drawCenteredTextWithShadow(textRenderer, Text.literal(val), lbx+bw+2+valW/2, y + 5, EasyBlockGui.C_TEXT);
+        ctx.drawCenteredTextWithShadow(textRenderer, Text.literal("\u203A"), rbx + bw/2, y + 5, EasyBlockGui.C_TEXT);
+        cycBounds[idx][0] = lbx; cycBounds[idx][1] = rbx;
+        cycBounds[idx][2] = y;   cycBounds[idx][3] = 1;   // active
+        return y + vh;
+    }
+
+    // ── Attack range row ──────────────────────────────────────────────
+    private int rangeRow(DrawContext ctx, int mx, int my, int x, int re, int y) {
+        ctx.drawTextWithShadow(textRenderer, Text.literal("Range"), x, y + 5, EasyBlockGui.C_TEXT2);
+        String rv = editAttackRange + " blk";
+        int bw = 14, vh = 18, valW = textRenderer.getWidth(rv) + 10;
+        int rbx = re - bw - 2, lbx = rbx - valW - 2 - bw;
+        boolean hl = hit(mx, my, lbx, y, bw, vh), hr = hit(mx, my, rbx, y, bw, vh);
+        RoundedRectRenderer.draw(ctx, lbx,      y, bw,   vh, RB, hl ? EasyBlockGui.C_NAV_ACT : EasyBlockGui.C_NAV_BG);
+        RoundedRectRenderer.draw(ctx, lbx+bw+2, y, valW, vh, RB, EasyBlockGui.C_CARD);
+        RoundedRectRenderer.draw(ctx, rbx,       y, bw,   vh, RB, hr ? EasyBlockGui.C_NAV_ACT : EasyBlockGui.C_NAV_BG);
+        ctx.drawCenteredTextWithShadow(textRenderer, Text.literal("\u2039"), lbx + bw/2, y + 5, EasyBlockGui.C_TEXT);
+        ctx.drawCenteredTextWithShadow(textRenderer, Text.literal(rv), lbx+bw+2+valW/2, y + 5, EasyBlockGui.C_TEXT);
+        ctx.drawCenteredTextWithShadow(textRenderer, Text.literal("\u203A"), rbx + bw/2, y + 5, EasyBlockGui.C_TEXT);
+        atkRngLbx = lbx; atkRngRbx = rbx; atkRngY = y;
+        return y + vh;
+    }
+
+    // ── Entity whitelist ──────────────────────────────────────────────
+    private int entityList(DrawContext ctx, int mx, int my, int x, int re, int y) {
+        refreshNearby();
+        ctx.drawTextWithShadow(textRenderer, Text.literal("Entity whitelist:"), x, y, EasyBlockGui.C_TEXT2);
+        y += 14;
+        int listW = re - 4 - x;
+        elX = x; elW = listW; elRowY0 = y;
+        elShown.clear();
+        elShown.addAll(nearbyTypes);
+        for (int i = 0; i < elShown.size(); i++) {
+            String id  = elShown.get(i);
+            int ey     = y + i * EL_ROW_H;
+            boolean wl = editAttackWl.contains(id);
+            boolean hv = hit(mx, my, x, ey, listW, EL_ROW_H - 2);
+            RoundedRectRenderer.draw(ctx, x, ey, listW, EL_ROW_H - 2, RB,
+                    wl ? 0xFF1A2B44 : (hv ? EasyBlockGui.C_NAV_ACT : EasyBlockGui.C_CARD));
+            if (wl) ctx.fill(x, ey + 4, x + 3, ey + EL_ROW_H - 6, EasyBlockGui.C_ACCENT);
+            String disp = id.contains(":") ? id.substring(id.indexOf(':') + 1) : id;
+            disp = Character.toUpperCase(disp.charAt(0)) + disp.substring(1).replace('_', ' ');
+            ctx.drawTextWithShadow(textRenderer, Text.literal(disp), x + 8, ey + 6,
+                    wl ? EasyBlockGui.C_TEXT : EasyBlockGui.C_TEXT2);
+            y += EL_ROW_H;
+        }
+        return y + 4;
+    }
+
+    // ─── Nearby entity types ──────────────────────────────────────────
+    private final List<String> nearbyTypes = new ArrayList<>();
+    private void refreshNearby() {
+        MinecraftClient mc = MinecraftClient.getInstance();
+        if (mc.world == null || mc.player == null) return;
         Set<String> seen = new LinkedHashSet<>();
-        client.world.getEntitiesByClass(LivingEntity.class,
-            client.player.getBoundingBox().expand(20), e -> !e.equals(client.player))
-            .forEach(e -> seen.add(Registries.ENTITY_TYPE.getId(e.getType()).toString()));
-        // keep existing whitelist entries even if not nearby
-        seen.addAll(editAttackWhitelist);
-        nearbyEntityTypes.clear();
-        nearbyEntityTypes.addAll(seen);
+        mc.world.getEntitiesByClass(LivingEntity.class,
+                        mc.player.getBoundingBox().expand(20), e -> !e.equals(mc.player))
+                .forEach(e -> seen.add(Registries.ENTITY_TYPE.getId(e.getType()).toString()));
+        seen.addAll(editAttackWl);
+        nearbyTypes.clear();
+        nearbyTypes.addAll(seen);
     }
 
-    /** Draws an ON/OFF toggle chip and stores its hit area; returns bottom Y. */
-    private int renderChip(DrawContext ctx, int mx, int my,
-                           int x, int y, String label, boolean on, boolean danger, int idx) {
-        String text = label + "  " + (on ? "\u00a7aON" : "\u00a7cOFF");
-        int w = textRenderer.getWidth(text) + 14;
-        int h = 16;
-        boolean hov = mx >= x && mx < x + w && my >= y && my < y + h;
-        int bg;
-        if (on) {
-            bg = danger ? (hov ? C_RED_H : C_RED) : (hov ? C_GREEN_H : C_GREEN);
-        } else {
-            bg = hov ? 0xFF2A2A40 : 0xFF1E1E30;
-        }
-        ctx.fill(x, y, x + w, y + h, bg);
-        ctx.drawTextWithShadow(textRenderer, Text.literal(text), x + 7, y + 4, C_TEXT);
-        chipBounds[idx][0] = x;
-        chipBounds[idx][1] = y;
-        chipBounds[idx][2] = w;
-        return y + h;
-    }
-
-    /** Draws a < value > cycler row and stores hit areas; returns bottom Y. */
-    private int renderCycler(DrawContext ctx, int mx, int my,
-                             int x, int y, String label, String valueStr, int idx) {
-        ctx.drawTextWithShadow(textRenderer, Text.literal("\u00a77" + label), x, y, C_TEXT_SEC);
-        y += 12;
-
-        int arrowW = 18, h = 16;
-        int valW   = textRenderer.getWidth(valueStr) + 14;
-
-        boolean hovL = mx >= x && mx < x + arrowW && my >= y && my < y + h;
-        ctx.fill(x, y, x + arrowW, y + h, hovL ? C_BLUE_H : C_BLUE);
-        ctx.drawCenteredTextWithShadow(textRenderer, Text.literal("\u2039"), x + arrowW / 2, y + 4, C_TEXT);
-
-        ctx.fill(x + arrowW, y, x + arrowW + valW, y + h, C_FIELD_BG);
-        ctx.drawCenteredTextWithShadow(textRenderer, Text.literal(valueStr),
-                x + arrowW + valW / 2, y + 4, C_TEXT);
-
-        int rx = x + arrowW + valW;
-        boolean hovR = mx >= rx && mx < rx + arrowW && my >= y && my < y + h;
-        ctx.fill(rx, y, rx + arrowW, y + h, hovR ? C_BLUE_H : C_BLUE);
-        ctx.drawCenteredTextWithShadow(textRenderer, Text.literal("\u203a"), rx + arrowW / 2, y + 4, C_TEXT);
-
-        cyclerBounds[idx][0] = x;
-        cyclerBounds[idx][1] = rx;
-        cyclerBounds[idx][2] = y;
-        return y + h;
-    }
-
-    // ── Right panel ───────────────────────────────────────────────
-
-    private void renderRightPanel(DrawContext ctx, int mx, int my) {
-        int rx  = panelX + LEFT_W + 10;
-        int rw  = panelW - LEFT_W - 16;
-        int y   = panelY + HEADER_H + 10;
-        int gap = 4;
+    // ═════════════════════════════════════════════════════════════════
+    // Right panel — step list
+    // ═════════════════════════════════════════════════════════════════
+    private void drawRightPanel(DrawContext ctx, int mx, int my) {
+        int rx = px + lw + 12;
+        int rw = pw - lw - 22;
+        int dy = py + HH + 10;
 
         ctx.drawTextWithShadow(textRenderer,
-                Text.literal("\u00a7bSteps \u00a77(" + macro.getSteps().size() + ")"), rx, y, C_ACCENT);
-        y += 16;
+                Text.literal("Steps (" + macro.getSteps().size() + ")"),
+                rx, dy, EasyBlockGui.C_TEXT);
+        dy += 16;
 
-        stepActY     = y;
-        stepActX[0]  = rx;
-        stepActX[1]  = rx + SA_W + gap;
-        stepActX[2]  = rx + (SA_W + gap) * 2;
-        stepActX[3]  = rx + (SA_W + gap) * 3;
+        // Action buttons
+        stepBtnH = 22;
+        int gap  = 4;
+        stepBtnW = (rw - gap * 3) / 4;
+        String[] lbls = {"+ Add", "\u25B2 Up", "\u25BC Down", "\u2717 Rem"};
+        int[] bgs  = {EasyBlockGui.C_ACCENT,    EasyBlockGui.C_NAV_BG, EasyBlockGui.C_NAV_BG, 0xFF7F1D1D};
+        int[] hbgs = {EasyBlockGui.C_ACCENT_HI, EasyBlockGui.C_NAV_ACT, EasyBlockGui.C_NAV_ACT, EasyBlockGui.C_DANGER};
+        stepBtnY = dy;
+        for (int i = 0; i < 4; i++) {
+            stepBtnX[i] = rx + i * (stepBtnW + gap);
+            boolean hv = hit(mx, my, stepBtnX[i], dy, stepBtnW, stepBtnH);
+            RoundedRectRenderer.draw(ctx, stepBtnX[i], dy, stepBtnW, stepBtnH, RB, hv ? hbgs[i] : bgs[i]);
+            ctx.drawCenteredTextWithShadow(textRenderer, Text.literal(lbls[i]),
+                    stepBtnX[i] + stepBtnW / 2, dy + (stepBtnH - 8) / 2, EasyBlockGui.C_TEXT);
+            switch (i) { case 0 -> hoverAdd = hv; case 1 -> hoverUp = hv;
+                         case 2 -> hoverDown = hv; case 3 -> hoverRem = hv; }
+        }
+        dy += stepBtnH + 6;
 
-        hoverAddStep  = inSA(mx, my, 0);
-        hoverMoveUp   = inSA(mx, my, 1);
-        hoverMoveDown = inSA(mx, my, 2);
-        hoverRemStep  = inSA(mx, my, 3);
-
-        drawSmallBtn(ctx, stepActX[0], stepActY, SA_W, BTN_H, "+ Add",         hoverAddStep,  C_GREEN, C_GREEN_H);
-        drawSmallBtn(ctx, stepActX[1], stepActY, SA_W, BTN_H, "\u25b2 Up",     hoverMoveUp,   C_BLUE,  C_BLUE_H);
-        drawSmallBtn(ctx, stepActX[2], stepActY, SA_W, BTN_H, "\u25bc Down",   hoverMoveDown, C_BLUE,  C_BLUE_H);
-        drawSmallBtn(ctx, stepActX[3], stepActY, SA_W, BTN_H, "\u2717 Remove", hoverRemStep,  C_RED,   C_RED_H);
-
-        y += BTN_H + 6;
-
-        // Step list
-        int entryH = 28;
-        int listH  = panelY + panelH - FOOTER_H - y - 4;
+        // Step entries
+        int entH   = 30;
+        int listBot = py + ph - FH - 6;
         List<MacroStep> steps = macro.getSteps();
 
+        ctx.enableScissor(rx, dy, rx + rw, listBot);
         if (steps.isEmpty()) {
-            ctx.drawTextWithShadow(textRenderer,
-                    Text.literal("\u00a77No steps yet"), rx, y + listH / 2, C_TEXT_DIM);
+            ctx.drawTextWithShadow(textRenderer, Text.literal("No steps yet."),
+                    rx, dy + 14, EasyBlockGui.C_TEXT3);
         } else {
-            int maxVis = Math.max(1, listH / entryH);
-            int end    = Math.min(stepScrollOffset + maxVis, steps.size());
-            for (int i = stepScrollOffset; i < end; i++) {
+            int maxVis = Math.max(1, (listBot - dy) / entH);
+            int end    = Math.min(stepScroll + maxVis, steps.size());
+            for (int i = stepScroll; i < end; i++) {
                 MacroStep step = steps.get(i);
-                int ey  = y + (i - stepScrollOffset) * entryH;
-                boolean sel = (i == selectedStepIndex);
-                boolean hov = mx >= rx && mx < rx + rw && my >= ey && my < ey + entryH - 2;
-                ctx.fill(rx, ey, rx + rw, ey + entryH - 2,
-                        sel ? 0xFF183050 : (hov ? 0xFF22223A : 0xFF1A1A2C));
-                if (sel) ctx.fill(rx, ey, rx + 3, ey + entryH - 2, 0xFF00B4D8);
-
-                String nm = (i + 1) + ". " + (step.getLabel().length() > 28
-                        ? step.getLabel().substring(0, 26) + ".." : step.getLabel());
-                BlockPos dest = step.getDestination();
-                String coord  = dest.getX() + "," + dest.getY() + "," + dest.getZ()
-                        + "  (" + step.getTargets().size() + " blk)";
-                ctx.drawTextWithShadow(textRenderer, Text.literal(nm),                 rx + 6, ey + 4,  C_TEXT);
-                ctx.drawTextWithShadow(textRenderer, Text.literal("\u00a77" + coord),  rx + 6, ey + 15, C_TEXT_SEC);
+                int ey = dy + (i - stepScroll) * entH;
+                boolean sel = (i == selStep);
+                boolean hv  = hit(mx, my, rx, ey, rw, entH - 2);
+                RoundedRectRenderer.draw(ctx, rx, ey, rw, entH - 2, RB,
+                        sel ? EasyBlockGui.C_CARD_SEL : (hv ? EasyBlockGui.C_CARD_HOV : EasyBlockGui.C_CARD));
+                if (sel) ctx.fill(rx, ey + R, rx + 3, ey + entH - 2 - R, EasyBlockGui.C_ACCENT);
+                String nm = (i + 1) + ". " + step.getLabel();
+                if (nm.length() > 34) nm = nm.substring(0, 32) + "..";
+                BlockPos d = step.getDestination();
+                String co = d.getX() + "," + d.getY() + "," + d.getZ()
+                        + " (" + step.getTargets().size() + " blk)";
+                ctx.drawTextWithShadow(textRenderer, Text.literal(nm), rx + 8, ey + 5, EasyBlockGui.C_TEXT);
+                ctx.drawTextWithShadow(textRenderer, Text.literal(co), rx + 8, ey + 17, EasyBlockGui.C_TEXT2);
             }
         }
+        ctx.disableScissor();
     }
 
-    private void drawSmallBtn(DrawContext ctx, int x, int y, int w, int h,
-                              String label, boolean hov, int bg, int bgH) {
-        ctx.fill(x, y, x + w, y + h, hov ? bgH : bg);
-        ctx.drawCenteredTextWithShadow(textRenderer, Text.literal(label), x + w / 2, y + 7, C_TEXT);
+    // ═════════════════════════════════════════════════════════════════
+    // Footer
+    // ═════════════════════════════════════════════════════════════════
+    private void drawFooter(DrawContext ctx, int mx, int my) {
+        footerBtnY = py + ph - FH + (FH - fbH) / 2;
+        int tot = fbW * 2 + 12;
+        saveX   = px + (pw - tot) / 2;
+        cancelX = saveX + fbW + 12;
+        hoverSave   = hit(mx, my, saveX,   footerBtnY, fbW, fbH);
+        hoverCancel = hit(mx, my, cancelX, footerBtnY, fbW, fbH);
+        RoundedRectRenderer.draw(ctx, saveX,   footerBtnY, fbW, fbH, RB,
+                hoverSave   ? EasyBlockGui.C_ACCENT_HI : EasyBlockGui.C_ACCENT);
+        RoundedRectRenderer.draw(ctx, cancelX, footerBtnY, fbW, fbH, RB,
+                hoverCancel ? EasyBlockGui.C_DANGER : 0xFF7F1D1D);
+        ctx.drawCenteredTextWithShadow(textRenderer, Text.literal("\u2714  Save"),
+                saveX + fbW / 2, footerBtnY + (fbH - 8) / 2, EasyBlockGui.C_TEXT);
+        ctx.drawCenteredTextWithShadow(textRenderer, Text.literal("\u2717  Cancel"),
+                cancelX + fbW / 2, footerBtnY + (fbH - 8) / 2, EasyBlockGui.C_TEXT);
     }
 
-    private boolean inSA(int mx, int my, int i) {
-        return mx >= stepActX[i] && mx < stepActX[i] + SA_W
-                && my >= stepActY && my < stepActY + BTN_H;
-    }
-
-    // ── Footer ────────────────────────────────────────────────────
-
-    private void renderFooter(DrawContext ctx, int mx, int my) {
-        footerBtnY = panelY + panelH - FOOTER_H + (FOOTER_H - BTN_H) / 2;
-        int total  = FB_W * 2 + 10;
-        saveX   = panelX + (panelW - total) / 2;
-        cancelX = saveX + FB_W + 10;
-
-        hoverSave   = mx >= saveX   && mx < saveX   + FB_W && my >= footerBtnY && my < footerBtnY + BTN_H;
-        hoverCancel = mx >= cancelX && mx < cancelX + FB_W && my >= footerBtnY && my < footerBtnY + BTN_H;
-
-        ctx.fill(saveX,   footerBtnY, saveX   + FB_W, footerBtnY + BTN_H, hoverSave   ? C_GREEN_H : C_GREEN);
-        ctx.fill(cancelX, footerBtnY, cancelX + FB_W, footerBtnY + BTN_H, hoverCancel ? C_RED_H   : C_RED);
-        ctx.drawCenteredTextWithShadow(textRenderer, Text.literal("\u2714 Save"),   saveX   + FB_W / 2, footerBtnY + 7, C_TEXT);
-        ctx.drawCenteredTextWithShadow(textRenderer, Text.literal("\u2717 Cancel"), cancelX + FB_W / 2, footerBtnY + 7, C_TEXT);
-    }
-
-    // ═══════════════════════════════════════════════════════════════
+    // ═════════════════════════════════════════════════════════════════
     // Input
-    // ═══════════════════════════════════════════════════════════════
+    // ═════════════════════════════════════════════════════════════════
 
     @Override
     public boolean mouseClicked(double mx, double my, int btn) {
         int imx = (int) mx, imy = (int) my;
 
-        // Close / outside-panel click
-        if (hoverClose) { backToParent(); return true; }
-        if (imx < panelX || imx > panelX + panelW || imy < panelY || imy > panelY + panelH) {
-            backToParent(); return true;
+        // Click outside panel → close
+        if (imx < px || imx > px + pw || imy < py || imy > py + ph) {
+            animClose();
+            return true;
         }
 
-        // Bool chips
-        for (int i = 0; i < 5; i++) {
-            int cx = chipBounds[i][0], cy = chipBounds[i][1], cw = chipBounds[i][2];
-            if (cw > 0 && imx >= cx && imx < cx + cw && imy >= cy && imy < cy + 16) {
+        // Fixed section (name/desc fields) — delegate to Screen children
+        if (imx < px + lw && imy >= py + HH && imy < scrollStartY) {
+            boolean handled = super.mouseClicked(mx, my, btn);
+            return handled;
+        }
+
+        // Toggles
+        for (int i = 0; i < 7; i++) {
+            int[] b = tgBounds[i];
+            if (b[2] > 0 && hit(imx, imy, b[0], b[1], b[2], b[3])) {
                 switch (i) {
-                    case 0 -> editLoop         = !editLoop;
+                    case 0 -> editLoop = !editLoop;
                     case 1 -> editSkipMismatch = !editSkipMismatch;
                     case 2 -> editAttackDanger = !editAttackDanger;
-                    case 3 -> editOnlyGround   = !editOnlyGround;
-                    case 4 -> editLockCrosshair = !editLockCrosshair;
+                    case 3 -> editOnlyGround = !editOnlyGround;
+                    case 4 -> editLockCam = !editLockCam;
+                    case 5 -> editAttackEnabled = !editAttackEnabled;
+                    case 6 -> editAttackWlOnly = !editAttackWlOnly;
                 }
                 return true;
             }
         }
 
-        // Numeric cyclers
+        // Cyclers
         for (int i = 0; i < 4; i++) {
-            int lx = cyclerBounds[i][0], rx = cyclerBounds[i][1], cy = cyclerBounds[i][2];
-            if (lx == 0 && rx == 0) continue; // Skip unused bounds
-            if (imy >= cy && imy < cy + 16) {
-                if (imx >= lx && imx < lx + 18) { cycleNumeric(i, -1); return true; }
-                if (imx >= rx && imx < rx + 18) { cycleNumeric(i, +1); return true; }
+            int[] c = cycBounds[i];
+            if (c[3] == 0) continue;
+            if (imy >= c[2] && imy < c[2] + 18) {
+                if (imx >= c[0] && imx < c[0] + 14) { cycleNum(i, -1); return true; }
+                if (imx >= c[1] && imx < c[1] + 14) { cycleNum(i, +1); return true; }
             }
         }
 
-        // Step action buttons
-        if (hoverAddStep) {
+        // Attack range
+        if (atkRngY >= 0 && imy >= atkRngY && imy < atkRngY + 18) {
+            if (imx >= atkRngLbx && imx < atkRngLbx + 14) { editAttackRange = Math.max(2,  editAttackRange - 1); return true; }
+            if (imx >= atkRngRbx && imx < atkRngRbx + 14) { editAttackRange = Math.min(50, editAttackRange + 1); return true; }
+        }
+
+        // Entity whitelist rows (only if in left panel scrollable area)
+        if (editAttackEnabled && editAttackWlOnly && !elShown.isEmpty()
+                && imx >= elX && imx < elX + elW) {
+            for (int i = 0; i < elShown.size(); i++) {
+                int ey = elRowY0 + i * EL_ROW_H;
+                if (imy >= ey && imy < ey + EL_ROW_H - 2) {
+                    String id = elShown.get(i);
+                    if (editAttackWl.contains(id)) editAttackWl.remove(id);
+                    else editAttackWl.add(id);
+                    return true;
+                }
+            }
+        }
+
+        // Step buttons
+        if (hoverAdd) {
             MinecraftClient mc = MinecraftClient.getInstance();
-            if (mc.player != null) {
-                BlockPos pos = mc.player.getBlockPos();
-                macro.addStep(new MacroStep("Step " + (macro.getSteps().size() + 1), pos));
-            }
+            if (mc.player != null)
+                macro.addStep(new MacroStep("Step " + (macro.getSteps().size() + 1), mc.player.getBlockPos()));
             return true;
         }
-        if (hoverMoveUp && selectedStepIndex > 0) {
-            List<MacroStep> steps = macro.getSteps();
-            MacroStep s = steps.remove(selectedStepIndex);
-            steps.add(--selectedStepIndex, s);
-            return true;
+        if (hoverUp && selStep > 0) {
+            List<MacroStep> s = macro.getSteps(); s.add(--selStep, s.remove(selStep + 1)); return true;
         }
-        if (hoverMoveDown && selectedStepIndex >= 0
-                && selectedStepIndex < macro.getSteps().size() - 1) {
-            List<MacroStep> steps = macro.getSteps();
-            MacroStep s = steps.remove(selectedStepIndex);
-            steps.add(++selectedStepIndex, s);
-            return true;
+        if (hoverDown && selStep >= 0 && selStep < macro.getSteps().size() - 1) {
+            List<MacroStep> s = macro.getSteps(); s.add(++selStep, s.remove(selStep - 1)); return true;
         }
-        if (hoverRemStep && selectedStepIndex >= 0
-                && selectedStepIndex < macro.getSteps().size()) {
-            macro.removeStep(selectedStepIndex);
-            if (selectedStepIndex >= macro.getSteps().size())
-                selectedStepIndex = macro.getSteps().size() - 1;
+        if (hoverRem && selStep >= 0 && selStep < macro.getSteps().size()) {
+            macro.removeStep(selStep);
+            if (selStep >= macro.getSteps().size()) selStep = macro.getSteps().size() - 1;
             return true;
         }
 
-        // Step list click
-        int listTop = stepActY + BTN_H + 6;
-        int rightX  = panelX + LEFT_W + 10;
-        if (imx >= rightX && imy >= listTop) {
-            int idx = stepScrollOffset + (imy - listTop) / 28;
-            if (idx >= 0 && idx < macro.getSteps().size()) {
-                selectedStepIndex = idx;
-                return true;
-            }
-        }
-
-        // Attack toggle chip (index 0)
-        {
-            int[] b = attackChipBounds[0];
-            if (b[2] > 0 && imx >= b[0] && imx < b[0] + b[2] && imy >= b[1] && imy < b[1] + 16) {
-                editAttackEnabled = !editAttackEnabled;
-                return true;
-            }
-        }
-        // Attack mode chip (index 1) — only visible when attack enabled
-        if (editAttackEnabled) {
-            int[] b = attackChipBounds[1];
-            if (b[2] > 0 && imx >= b[0] && imx < b[0] + b[2] && imy >= b[1] && imy < b[1] + 16) {
-                editAttackWhitelistOnly = !editAttackWhitelistOnly;
-                return true;
-            }
-            // Range cycler
-            if (attackRangeBounds[2] > 0 && imy >= attackRangeBounds[2] && imy < attackRangeBounds[2] + 16) {
-                if (imx >= attackRangeBounds[0] && imx < attackRangeBounds[0] + 14) {
-                    editAttackRange = Math.max(2, editAttackRange - 1);
-                    return true;
-                }
-                if (imx >= attackRangeBounds[1] && imx < attackRangeBounds[1] + 14) {
-                    editAttackRange = Math.min(50, editAttackRange + 1);
-                    return true;
-                }
-            }
-            // Entity whitelist row click
-            if (editAttackWhitelistOnly && !entityListVisible.isEmpty()) {
-                for (int i = 0; i < entityListVisible.size(); i++) {
-                    int ey  = entityListY0 + i * entityListItemH;
-                    if (imx >= entityListX0 && imx < entityListX0 + entityListW
-                            && imy >= ey && imy < ey + entityListItemH) {
-                        String id = entityListVisible.get(i);
-                        if (editAttackWhitelist.contains(id)) {
-                            editAttackWhitelist.remove(id);
-                        } else {
-                            editAttackWhitelist.add(id);
-                        }
-                        return true;
-                    }
-                }
-            }
+        // Step list rows
+        int rx       = px + lw + 12;
+        int listTop  = stepBtnY + stepBtnH + 6;
+        if (imx >= rx && imy >= listTop) {
+            int idx = stepScroll + (imy - listTop) / 30;
+            if (idx >= 0 && idx < macro.getSteps().size()) { selStep = idx; return true; }
         }
 
         // Footer
-        if (hoverSave)   { applyChanges(); backToParent(); return true; }
-        if (hoverCancel) { backToParent(); return true; }
+        if (hoverSave)   { applyChanges(); animClose(); return true; }
+        if (hoverCancel) { animClose(); return true; }
 
         return super.mouseClicked(mx, my, btn);
     }
 
     @Override
     public boolean mouseScrolled(double mx, double my, double hAmt, double vAmt) {
-        if (mx >= panelX + LEFT_W) {
-            int maxOff = Math.max(0, macro.getSteps().size() - 5);
-            stepScrollOffset = Math.max(0, Math.min(maxOff, stepScrollOffset - (int) vAmt));
-            return true;
+        if ((int) mx < px + lw) {
+            // Left panel scroll
+            leftScroll = Math.max(0, Math.min(leftScrollMax, leftScroll - (int)(vAmt * 14)));
+        } else {
+            // Right panel: step list scroll
+            int maxStep = Math.max(0, macro.getSteps().size() - 5);
+            stepScroll = Math.max(0, Math.min(maxStep, stepScroll - (int) vAmt));
         }
-        // Entity list scroll (left panel, whitelist visible)
-        if (editAttackEnabled && editAttackWhitelistOnly && !nearbyEntityTypes.isEmpty()) {
-            int maxScroll = Math.max(0, nearbyEntityTypes.size() - entityListVisibleCount);
-            entityListScroll = Math.max(0, Math.min(maxScroll, entityListScroll - (int) vAmt));
-            return true;
-        }
-        return super.mouseScrolled(mx, my, hAmt, vAmt);
+        return true;
     }
 
     @Override
-    public boolean shouldPause() { return false; }
-
-    @Override
-    public void close() { backToParent(); }
-
-    // ═══════════════════════════════════════════════════════════════
-    // Helpers
-    // ═══════════════════════════════════════════════════════════════
-
-    private void backToParent() {
-        if (client != null) client.setScreen(parent);
-    }
-
-    private void cycleNumeric(int idx, int dir) {
-        switch (idx) {
-            case 0 -> editMiningDelay  = clamp(editMiningDelay + dir * 50, 50, 450);
-            case 1 -> editMoveTimeout  = clamp(editMoveTimeout + dir * 100, 100, 2000);
-            case 2 -> {
-                int steps = Math.round(editArrivalRadius / 0.5f) + dir;
-                editArrivalRadius = clamp(steps, 1, 10) * 0.5f;
+    public boolean keyPressed(int keyCode, int scanCode, int mods) {
+        // Escape: unfocus field first, then close on second press
+        if (keyCode == 256) {
+            if (getFocused() != null) {
+                setFocused(null);
+                return true;
             }
-            case 3 -> editAttackCPS = clamp(editAttackCPS + dir, 1, 20);
+            animClose();
+            return true;
+        }
+        return super.keyPressed(keyCode, scanCode, mods);
+    }
+
+    // ═════════════════════════════════════════════════════════════════
+    // Helpers
+    // ═════════════════════════════════════════════════════════════════
+
+    private static boolean hit(int mx, int my, int x, int y, int w, int h) {
+        return mx >= x && mx < x + w && my >= y && my < y + h;
+    }
+
+    private void cycleNum(int idx, int dir) {
+        switch (idx) {
+            case 0 -> editMiningDelay  = wrap(editMiningDelay  + dir * 50,   50,   2000);
+            case 1 -> editMoveTimeout  = wrap(editMoveTimeout  + dir * 500,  500,  60000);
+            case 2 -> { int s = Math.round(editArrivalRadius / 0.5f) + dir; editArrivalRadius = wrap(s, 1, 10) * 0.5f; }
+            case 3 -> editAttackCPS    = wrap(editAttackCPS    + dir,        1,    20);
         }
     }
 
-    private static int clamp(int v, int lo, int hi) {
-        if (v < lo) return hi;
-        if (v > hi) return lo;
-        return v;
+    private static int wrap(int v, int lo, int hi) {
+        if (v < lo) return hi; if (v > hi) return lo; return v;
     }
 
     private void applyChanges() {
-        macro.setName(editName);
-        macro.setDescription(editDescription);
-        MacroConfig cfg = macro.getConfig();
-        cfg.setLoop(editLoop);
-        cfg.setSkipMismatch(editSkipMismatch);
-        cfg.setAttackDanger(editAttackDanger);
-        cfg.setAttackCPS(editAttackCPS);
-        cfg.setOnlyGround(editOnlyGround);
-        cfg.setLockCrosshair(editLockCrosshair);
-        cfg.setMiningDelay(editMiningDelay);
-        cfg.setMoveTimeout(editMoveTimeout);
-        cfg.setArrivalRadius(editArrivalRadius);
-        cfg.setAttackEnabled(editAttackEnabled);
-        cfg.setAttackWhitelistOnly(editAttackWhitelistOnly);
-        cfg.setAttackWhitelist(editAttackWhitelist);
-        cfg.setAttackRange(editAttackRange);
+        if (editName != null && !editName.isEmpty()) macro.setName(editName);
+        macro.setDescription(editDesc);
+        MacroConfig c = macro.getConfig();
+        c.setLoop(editLoop);               c.setSkipMismatch(editSkipMismatch);
+        c.setAttackDanger(editAttackDanger); c.setAttackCPS(editAttackCPS);
+        c.setOnlyGround(editOnlyGround);   c.setLockCrosshair(editLockCam);
+        c.setMiningDelay(editMiningDelay);  c.setMoveTimeout(editMoveTimeout);
+        c.setArrivalRadius(editArrivalRadius); c.setAttackEnabled(editAttackEnabled);
+        c.setAttackWhitelistOnly(editAttackWlOnly); c.setAttackWhitelist(editAttackWl);
+        c.setAttackRange(editAttackRange);
         MacroModClient.getManager().save(macro);
     }
 }
-

@@ -95,7 +95,7 @@ public class SmoothAim {
      * Angle at which the piecewise speed ramp bottoms out (slow zone boundary).
      * Below this total angle delta the aim crawls in for precision.
      */
-    private static final float SLOW_ZONE_DEG = 15f;
+    private static final float SLOW_ZONE_DEG = 25f;
 
     /**
      * Angle at which the speed ramp reaches its maximum multiplier.
