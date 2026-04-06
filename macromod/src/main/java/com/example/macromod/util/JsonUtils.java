@@ -96,7 +96,7 @@ public final class JsonUtils {
                 return null;
             }
             try {
-                return StringNbtReader.parse(json.getAsString());
+                return StringNbtReader.readCompound(json.getAsString());
             } catch (Exception e) {
                 throw new JsonParseException("Failed to parse NBT: " + json.getAsString(), e);
             }

@@ -1,21 +1,30 @@
 package com.example.macromod.ui.easyblock;
 
 import com.example.macromod.MacroModClient;
+import com.example.macromod.config.ModConfig;
+import com.example.macromod.manager.AutoAttackManager;
+import com.example.macromod.manager.AutoFarmerManager;
 import com.example.macromod.manager.AutoFishingManager;
+import com.example.macromod.manager.FreelookManager;
 import com.example.macromod.model.Macro;
 import com.example.macromod.model.MacroStep;
 import com.example.macromod.ui.MacroEditScreen;
 import net.fabricmc.api.EnvType;
 import net.fabricmc.api.Environment;
 import net.minecraft.client.MinecraftClient;
+import net.minecraft.client.gui.Click;
 import net.minecraft.client.gui.DrawContext;
+import net.minecraft.entity.Entity;
+import net.minecraft.entity.LivingEntity;
 import net.minecraft.item.ItemStack;
+import net.minecraft.registry.Registries;
 import net.minecraft.text.Text;
+import net.minecraft.util.Identifier;
 import net.minecraft.util.math.BlockPos;
+import net.minecraft.util.math.Box;
 
 import java.text.SimpleDateFormat;
-import java.util.Date;
-import java.util.List;
+import java.util.*;
 
 /**
  * Main ClickGUI — dark theme with blue accent, LiquidBounce-inspired layout.
@@ -62,8 +71,8 @@ public class EasyBlockGui extends BasePopupScreen {
     // ═══════════════════════════════════════════════════════════════════
     // State — Tabs
     // ═══════════════════════════════════════════════════════════════════
-    private int activeTab = 0; // 0 = Macros, 1 = Auto Farm
-    private int tabMacrosX, tabFarmX, tabY, tabW, tabH;
+    private int activeTab = 0; // 0 = Macros, 1 = Auto Farm, 2 = Visuals, 3 = Misc
+    private int tabMacrosX, tabFarmX, tabVisualsX, tabMiscX, tabY, tabW, tabH;
 
     // ═══════════════════════════════════════════════════════════════════
     // State — Macros tab
@@ -90,6 +99,70 @@ public class EasyBlockGui extends BasePopupScreen {
     private int radLeftX, radRightX, radBtnY;
 
     // ═══════════════════════════════════════════════════════════════════
+    // State — Auto Farmer
+    // ═══════════════════════════════════════════════════════════════════
+    private boolean optAutoFarmer;
+    private AutoFarmerManager.HorizontalDir optFarmerDir;
+    private float animFarmer;
+    private final int[] farmerTgBounds = new int[4]; // x, y, w, h
+    private int farmerDirBtnX, farmerDirBtnY, farmerDirBtnW, farmerDirBtnH;
+
+    // ═══════════════════════════════════════════════════════════════════
+    // State — Auto Attack
+    // ═══════════════════════════════════════════════════════════════════
+    private boolean optAutoAttack;
+    private AutoAttackManager.PriorityMode optAttackPriority;
+    private float optAttackRange;
+    private float animAutoAttack;
+    private final int[] attackTgBounds = new int[4];
+    private int attackPriorityBtnX, attackPriorityBtnY, attackPriorityBtnW, attackPriorityBtnH;
+    private int attackRangeLeftX, attackRangeRightX, attackRangeBtnY;
+
+    // ═══════════════════════════════════════════════════════════════════
+    // State — Visuals tab
+    // ═══════════════════════════════════════════════════════════════════
+    private boolean optTargetEsp, optEntitiesEsp, optBlockEsp;
+    private float animTargetEsp, animEntitiesEsp, animBlockEsp;
+    private final int[] targetEspTgBounds = new int[4];
+    private final int[] entitiesEspTgBounds = new int[4];
+    private final int[] blockEspTgBounds = new int[4];
+    private int blockRadiusLeftX, blockRadiusRightX, blockRadiusBtnY;
+    private int optBlockEspRadius;
+
+    // ── Dynamic nearby scan state ──
+    private List<String> nearbyEntityTypes = new ArrayList<>();
+    private List<String> nearbyBlockTypes = new ArrayList<>();
+    private int visualsScanCounter = 0;
+    private static final int VISUALS_SCAN_INTERVAL = 40; // rescan every 40 frames
+    private int visualsScrollY = 0;
+    private int visualsMaxScrollY = 0;
+    private int entityListY, blockListY;
+    private static final int LIST_ITEM_H = 16;
+    private static final Set<String> BORING_BLOCKS = Set.of(
+            "minecraft:air", "minecraft:cave_air", "minecraft:void_air",
+            "minecraft:stone", "minecraft:dirt", "minecraft:grass_block",
+            "minecraft:deepslate", "minecraft:netherrack", "minecraft:end_stone",
+            "minecraft:bedrock", "minecraft:water", "minecraft:lava",
+            "minecraft:sand", "minecraft:gravel", "minecraft:cobblestone",
+            "minecraft:tuff", "minecraft:calcite", "minecraft:dripstone_block",
+            "minecraft:smooth_basalt", "minecraft:andesite", "minecraft:diorite",
+            "minecraft:granite", "minecraft:sandstone", "minecraft:red_sandstone",
+            "minecraft:soul_sand", "minecraft:soul_soil", "minecraft:basalt",
+            "minecraft:blackstone", "minecraft:cobbled_deepslate"
+    );
+
+    // ═══════════════════════════════════════════════════════════════════
+    // State — Misc tab
+    // ═══════════════════════════════════════════════════════════════════
+    private boolean optFreelook;
+    private int optFOV;
+    private boolean optDebugLogging;
+    private float animFreelook, animDebugLogging;
+    private final int[] freelookTgBounds = new int[4];
+    private final int[] debugLogTgBounds = new int[4];
+    private int fovLeftX, fovRightX, fovBtnY;
+
+    // ═══════════════════════════════════════════════════════════════════
     // Constructor
     // ═══════════════════════════════════════════════════════════════════
 
@@ -103,6 +176,34 @@ public class EasyBlockGui extends BasePopupScreen {
         animFish = optAutoFish ? 1f : 0f;
         animFishAtk = optFishAttack ? 1f : 0f;
         animMobs = optAttackMobs ? 1f : 0f;
+
+        AutoFarmerManager farmer = AutoFarmerManager.getInstance();
+        optAutoFarmer = farmer.isEnabled();
+        optFarmerDir = farmer.getStartDirection();
+        animFarmer = optAutoFarmer ? 1f : 0f;
+
+        AutoAttackManager aam = AutoAttackManager.getInstance();
+        optAutoAttack = aam.isEnabled();
+        optAttackPriority = aam.getPriorityMode();
+        optAttackRange = aam.getAttackRange();
+        animAutoAttack = optAutoAttack ? 1f : 0f;
+
+        FreelookManager fl = FreelookManager.getInstance();
+        optFreelook = fl.isEnabled();
+        optFOV = fl.getFreelookFov();
+        animFreelook = optFreelook ? 1f : 0f;
+
+        ModConfig modCfg = MacroModClient.getConfigManager().getConfig();
+        optDebugLogging = modCfg.isDebugLogging();
+        animDebugLogging = optDebugLogging ? 1f : 0f;
+
+        optTargetEsp = modCfg.isTargetEspEnabled();
+        optEntitiesEsp = modCfg.isEntitiesEspEnabled();
+        optBlockEsp = modCfg.isBlockEspEnabled();
+        optBlockEspRadius = modCfg.getBlockEspRadius();
+        animTargetEsp = optTargetEsp ? 1f : 0f;
+        animEntitiesEsp = optEntitiesEsp ? 1f : 0f;
+        animBlockEsp = optBlockEsp ? 1f : 0f;
     }
 
     @Override
@@ -134,8 +235,12 @@ public class EasyBlockGui extends BasePopupScreen {
 
         if (activeTab == 0) {
             drawMacrosTab(ctx, mx, my);
-        } else {
+        } else if (activeTab == 1) {
             drawAutoFarmTab(ctx, mx, my);
+        } else if (activeTab == 2) {
+            drawVisualsTab(ctx, mx, my);
+        } else {
+            drawMiscTab(ctx, mx, my);
         }
     }
 
@@ -147,23 +252,35 @@ public class EasyBlockGui extends BasePopupScreen {
                 px + 12, py + (HEADER_H - 8) / 2, C_TEXT);
 
         // Tab buttons (centered)
-        tabW = 70; tabH = 22;
-        int tabTotalW = tabW * 2 + 4;
+        tabW = 65; tabH = 22;
+        int tabTotalW = tabW * 4 + 12;
         tabMacrosX = px + (pw - tabTotalW) / 2;
         tabFarmX = tabMacrosX + tabW + 4;
+        tabVisualsX = tabFarmX + tabW + 4;
+        tabMiscX = tabVisualsX + tabW + 4;
         tabY = py + (HEADER_H - tabH) / 2;
 
         boolean hovTab0 = mx >= tabMacrosX && mx < tabMacrosX + tabW && my >= tabY && my < tabY + tabH;
         boolean hovTab1 = mx >= tabFarmX && mx < tabFarmX + tabW && my >= tabY && my < tabY + tabH;
+        boolean hovTab2 = mx >= tabVisualsX && mx < tabVisualsX + tabW && my >= tabY && my < tabY + tabH;
+        boolean hovTab3 = mx >= tabMiscX && mx < tabMiscX + tabW && my >= tabY && my < tabY + tabH;
 
         RoundedRectRenderer.draw(ctx, tabMacrosX, tabY, tabW, tabH, RB,
                 activeTab == 0 ? C_ACCENT : (hovTab0 ? C_NAV_ACT : C_NAV_BG));
         RoundedRectRenderer.draw(ctx, tabFarmX, tabY, tabW, tabH, RB,
                 activeTab == 1 ? C_ACCENT : (hovTab1 ? C_NAV_ACT : C_NAV_BG));
+        RoundedRectRenderer.draw(ctx, tabVisualsX, tabY, tabW, tabH, RB,
+                activeTab == 2 ? C_ACCENT : (hovTab2 ? C_NAV_ACT : C_NAV_BG));
+        RoundedRectRenderer.draw(ctx, tabMiscX, tabY, tabW, tabH, RB,
+                activeTab == 3 ? C_ACCENT : (hovTab3 ? C_NAV_ACT : C_NAV_BG));
         ctx.drawCenteredTextWithShadow(textRenderer, Text.literal("Macros"),
                 tabMacrosX + tabW / 2, tabY + (tabH - 8) / 2, C_TEXT);
         ctx.drawCenteredTextWithShadow(textRenderer, Text.literal("Auto Farm"),
                 tabFarmX + tabW / 2, tabY + (tabH - 8) / 2, C_TEXT);
+        ctx.drawCenteredTextWithShadow(textRenderer, Text.literal("Visuals"),
+                tabVisualsX + tabW / 2, tabY + (tabH - 8) / 2, C_TEXT);
+        ctx.drawCenteredTextWithShadow(textRenderer, Text.literal("Misc"),
+                tabMiscX + tabW / 2, tabY + (tabH - 8) / 2, C_TEXT);
 
         // Close button
         int cx = px + pw - 28, cy = py + (HEADER_H - 20) / 2;
@@ -458,6 +575,81 @@ public class EasyBlockGui extends BasePopupScreen {
                 radValX + radW / 2, dy + 5, C_TEXT);
         dy += 30;
 
+        // ── Auto Farmer section ───────────────────────────────────────
+        dy += 6;
+        dy = drawSectionHeader(ctx, lx, dy, "Auto Farmer");
+
+        // Toggle
+        animFarmer = Anim.smooth(animFarmer, optAutoFarmer ? 1f : 0f, 20f);
+        int ftw = ToggleRenderer.TOGGLE_W, fth = ToggleRenderer.TOGGLE_H;
+        int fRowH = Math.max(fth + 4, 20);
+        ctx.drawTextWithShadow(textRenderer, Text.literal("Auto Farmer"),
+                lx, dy + (fRowH - 8) / 2, C_TEXT);
+        int ftgX = rEdge - ftw, ftgY = dy + (fRowH - fth) / 2;
+        ToggleRenderer.draw(ctx, ftgX, ftgY, animFarmer);
+        farmerTgBounds[0] = ftgX; farmerTgBounds[1] = ftgY;
+        farmerTgBounds[2] = ftw;  farmerTgBounds[3] = fth;
+        dy += fRowH + 8;
+
+        // Direction dropdown button
+        String dirLabel = "Start Direction: " + optFarmerDir.name();
+        int dirW = textRenderer.getWidth(dirLabel) + 18, dirH = 22;
+        farmerDirBtnX = lx + 16; farmerDirBtnY = dy; farmerDirBtnW = dirW; farmerDirBtnH = dirH;
+        boolean dirHov = mx >= farmerDirBtnX && mx < farmerDirBtnX + dirW && my >= dy && my < dy + dirH;
+        RoundedRectRenderer.draw(ctx, farmerDirBtnX, farmerDirBtnY, dirW, dirH, RB,
+                dirHov ? C_NAV_ACT : C_NAV_BG);
+        ctx.drawTextWithShadow(textRenderer, Text.literal(dirLabel),
+                farmerDirBtnX + 9, farmerDirBtnY + (dirH - 8) / 2, C_TEXT2);
+        dy += dirH + 10;
+
+        // ── Auto Attack section ───────────────────────────────────────
+        dy += 6;
+        dy = drawSectionHeader(ctx, lx, dy, "Auto Attack");
+
+        // Toggle
+        animAutoAttack = Anim.smooth(animAutoAttack, optAutoAttack ? 1f : 0f, 20f);
+        int aatw = ToggleRenderer.TOGGLE_W, aath = ToggleRenderer.TOGGLE_H;
+        int aaRowH = Math.max(aath + 4, 20);
+        ctx.drawTextWithShadow(textRenderer, Text.literal("Auto Attack"),
+                lx, dy + (aaRowH - 8) / 2, C_TEXT);
+        int aaTogX = rEdge - aatw, aaTogY = dy + (aaRowH - aath) / 2;
+        ToggleRenderer.draw(ctx, aaTogX, aaTogY, animAutoAttack);
+        attackTgBounds[0] = aaTogX; attackTgBounds[1] = aaTogY;
+        attackTgBounds[2] = aatw;   attackTgBounds[3] = aath;
+        dy += aaRowH + 8;
+
+        // Priority mode button
+        String prioLabel = "Priority: " + optAttackPriority.name();
+        int prioW = textRenderer.getWidth(prioLabel) + 18, prioH = 22;
+        attackPriorityBtnX = lx + 16; attackPriorityBtnY = dy;
+        attackPriorityBtnW = prioW;   attackPriorityBtnH = prioH;
+        boolean prioHov = mx >= attackPriorityBtnX && mx < attackPriorityBtnX + prioW
+                && my >= dy && my < dy + prioH;
+        RoundedRectRenderer.draw(ctx, attackPriorityBtnX, attackPriorityBtnY, prioW, prioH, RB,
+                prioHov ? C_NAV_ACT : C_NAV_BG);
+        ctx.drawTextWithShadow(textRenderer, Text.literal(prioLabel),
+                attackPriorityBtnX + 9, attackPriorityBtnY + (prioH - 8) / 2, C_TEXT2);
+        dy += prioH + 10;
+
+        // Attack range cycler
+        String rangeVal = String.format("%.1f blk", optAttackRange);
+        int rangeValW = textRenderer.getWidth(rangeVal) + 12;
+        ctx.drawTextWithShadow(textRenderer, Text.literal("Range:"), lx + 16, dy + 4, C_TEXT2);
+        int rangeValX = rEdge - rangeValW - 28;
+        attackRangeLeftX  = rangeValX - 20;
+        attackRangeRightX = rangeValX + rangeValW + 4;
+        attackRangeBtnY   = dy;
+        boolean hAL = mx >= attackRangeLeftX  && mx < attackRangeLeftX  + 16 && my >= dy && my < dy + 18;
+        boolean hAR = mx >= attackRangeRightX && mx < attackRangeRightX + 16 && my >= dy && my < dy + 18;
+        RoundedRectRenderer.draw(ctx, attackRangeLeftX,  dy, 16, 18, RB, hAL ? C_NAV_ACT : C_NAV_BG);
+        RoundedRectRenderer.draw(ctx, attackRangeRightX, dy, 16, 18, RB, hAR ? C_NAV_ACT : C_NAV_BG);
+        ctx.drawCenteredTextWithShadow(textRenderer, Text.literal("<"), attackRangeLeftX + 8,  dy + 5, C_TEXT);
+        ctx.drawCenteredTextWithShadow(textRenderer, Text.literal(">"), attackRangeRightX + 8, dy + 5, C_TEXT);
+        RoundedRectRenderer.draw(ctx, rangeValX, dy, rangeValW, 18, RB, C_CARD);
+        ctx.drawCenteredTextWithShadow(textRenderer, Text.literal(rangeVal),
+                rangeValX + rangeValW / 2, dy + 5, C_TEXT);
+        dy += 30;
+
         // Footer
         ctx.drawTextWithShadow(textRenderer,
                 Text.literal("Settings apply while macros run."),
@@ -483,12 +675,271 @@ public class EasyBlockGui extends BasePopupScreen {
         return y + rowH;
     }
 
+    private void drawMiscTab(DrawContext ctx, int mx, int my) {
+        int lx = px + 24;
+        int rEdge = px + pw - 24;
+        int dy = py + HEADER_H + 18;
+
+        // ── Freelook section ──────────────────────────────────────────
+        dy = drawSectionHeader(ctx, lx, dy, "Freelook");
+
+        animFreelook = Anim.smooth(animFreelook, optFreelook ? 1f : 0f, 20f);
+        int tw = ToggleRenderer.TOGGLE_W, th = ToggleRenderer.TOGGLE_H;
+        int rowH = Math.max(th + 4, 20);
+        ctx.drawTextWithShadow(textRenderer, Text.literal("Enable Freelook"),
+                lx, dy + (rowH - 8) / 2, C_TEXT);
+        int flTgX = rEdge - tw, flTgY = dy + (rowH - th) / 2;
+        ToggleRenderer.draw(ctx, flTgX, flTgY, animFreelook);
+        freelookTgBounds[0] = flTgX; freelookTgBounds[1] = flTgY;
+        freelookTgBounds[2] = tw;    freelookTgBounds[3] = th;
+        dy += rowH + 10;
+
+        // FOV cycler
+        String fovVal = optFOV + "\u00B0";
+        int fovW = textRenderer.getWidth(fovVal) + 12;
+        ctx.drawTextWithShadow(textRenderer, Text.literal("FOV:"), lx + 16, dy + 4, C_TEXT2);
+        int fovValX = rEdge - fovW - 28;
+        fovLeftX = fovValX - 20; fovRightX = fovValX + fovW + 4; fovBtnY = dy;
+        boolean fhL = mx >= fovLeftX && mx < fovLeftX + 16 && my >= dy && my < dy + 18;
+        boolean fhR = mx >= fovRightX && mx < fovRightX + 16 && my >= dy && my < dy + 18;
+        RoundedRectRenderer.draw(ctx, fovLeftX, dy, 16, 18, RB, fhL ? C_NAV_ACT : C_NAV_BG);
+        RoundedRectRenderer.draw(ctx, fovRightX, dy, 16, 18, RB, fhR ? C_NAV_ACT : C_NAV_BG);
+        ctx.drawCenteredTextWithShadow(textRenderer, Text.literal("<"), fovLeftX + 8, dy + 5, C_TEXT);
+        ctx.drawCenteredTextWithShadow(textRenderer, Text.literal(">"), fovRightX + 8, dy + 5, C_TEXT);
+        RoundedRectRenderer.draw(ctx, fovValX, dy, fovW, 18, RB, C_CARD);
+        ctx.drawCenteredTextWithShadow(textRenderer, Text.literal(fovVal),
+                fovValX + fovW / 2, dy + 5, C_TEXT);
+        dy += 30;
+
+        // ── Debug section ─────────────────────────────────────────────
+        dy += 6;
+        dy = drawSectionHeader(ctx, lx, dy, "Debug");
+
+        animDebugLogging = Anim.smooth(animDebugLogging, optDebugLogging ? 1f : 0f, 20f);
+        ctx.drawTextWithShadow(textRenderer, Text.literal("Enable Debug Logs"),
+                lx, dy + (rowH - 8) / 2, C_TEXT);
+        int dlTgX = rEdge - tw, dlTgY = dy + (rowH - th) / 2;
+        ToggleRenderer.draw(ctx, dlTgX, dlTgY, animDebugLogging);
+        debugLogTgBounds[0] = dlTgX; debugLogTgBounds[1] = dlTgY;
+        debugLogTgBounds[2] = tw;    debugLogTgBounds[3] = th;
+        dy += rowH + 10;
+
+        // Footer
+        ctx.drawTextWithShadow(textRenderer,
+                Text.literal("Edit config file for advanced settings."),
+                lx, dy, C_TEXT3);
+    }
+
+    // ═══════════════════════════════════════════════════════════════════
+    // Visuals Tab
+    // ═══════════════════════════════════════════════════════════════════
+
+    private void drawVisualsTab(DrawContext ctx, int mx, int my) {
+        MinecraftClient mc = MinecraftClient.getInstance();
+        ModConfig modCfg = MacroModClient.getConfigManager().getConfig();
+
+        // Periodic nearby scan
+        visualsScanCounter++;
+        if (visualsScanCounter >= VISUALS_SCAN_INTERVAL) {
+            visualsScanCounter = 0;
+            scanNearbyEntities(mc);
+            scanNearbyBlocks(mc, modCfg);
+        }
+        if (nearbyEntityTypes.isEmpty() && nearbyBlockTypes.isEmpty() && visualsScanCounter == 1) {
+            scanNearbyEntities(mc);
+            scanNearbyBlocks(mc, modCfg);
+        }
+
+        int lx = px + 24;
+        int rEdge = px + pw - 24;
+        int tw = ToggleRenderer.TOGGLE_W, th = ToggleRenderer.TOGGLE_H;
+        int rowH = Math.max(th + 4, 20);
+
+        // Compute total content height for scrolling
+        int contentH = 0;
+        contentH += 18 + rowH + 6 + 16; // Target ESP header+toggle+desc
+        contentH += 10 + 18 + rowH + 8; // Entities ESP header+toggle
+        contentH += 14 + nearbyEntityTypes.size() * LIST_ITEM_H + 8; // entity list
+        contentH += 10 + 18 + rowH + 8; // Block ESP header+toggle
+        contentH += 28 + 14; // radius cycler
+        contentH += nearbyBlockTypes.size() * LIST_ITEM_H + 18; // block list + footer
+        int availH = ph - HEADER_H - 18;
+        visualsMaxScrollY = Math.max(0, contentH - availH);
+        visualsScrollY = Math.min(visualsScrollY, visualsMaxScrollY);
+
+        // Enable scissor for scrollable content
+        ctx.enableScissor(px, py + HEADER_H, px + pw, py + ph);
+
+        int dy = py + HEADER_H + 18 - visualsScrollY;
+
+        Set<String> entityWL = new HashSet<>(modCfg.getEntityWhitelist());
+        Set<String> blockWL  = new HashSet<>(modCfg.getBlockWhitelist());
+
+        // ── Target ESP section ────────────────────────────────────────
+        dy = drawSectionHeader(ctx, lx, dy, "Target ESP");
+
+        animTargetEsp = Anim.smooth(animTargetEsp, optTargetEsp ? 1f : 0f, 20f);
+        ctx.drawTextWithShadow(textRenderer, Text.literal("Show Target Box"),
+                lx, dy + (rowH - 8) / 2, C_TEXT);
+        int teTgX = rEdge - tw, teTgY = dy + (rowH - th) / 2;
+        ToggleRenderer.draw(ctx, teTgX, teTgY, animTargetEsp);
+        targetEspTgBounds[0] = teTgX; targetEspTgBounds[1] = teTgY;
+        targetEspTgBounds[2] = tw;    targetEspTgBounds[3] = th;
+        dy += rowH + 6;
+        ctx.drawTextWithShadow(textRenderer,
+                Text.literal("Red box around current attack target"),
+                lx + 16, dy, C_TEXT3);
+        dy += 18;
+
+        // ── Entities ESP section ──────────────────────────────────────
+        dy += 10;
+        dy = drawSectionHeader(ctx, lx, dy, "Entities ESP");
+
+        animEntitiesEsp = Anim.smooth(animEntitiesEsp, optEntitiesEsp ? 1f : 0f, 20f);
+        ctx.drawTextWithShadow(textRenderer, Text.literal("Enable Entities ESP"),
+                lx, dy + (rowH - 8) / 2, C_TEXT);
+        int eeTgX = rEdge - tw, eeTgY = dy + (rowH - th) / 2;
+        ToggleRenderer.draw(ctx, eeTgX, eeTgY, animEntitiesEsp);
+        entitiesEspTgBounds[0] = eeTgX; entitiesEspTgBounds[1] = eeTgY;
+        entitiesEspTgBounds[2] = tw;    entitiesEspTgBounds[3] = th;
+        dy += rowH + 8;
+
+        // Entity list (clickable rows)
+        ctx.drawTextWithShadow(textRenderer, Text.literal("Nearby (20 blk):"),
+                lx + 8, dy, C_TEXT2);
+        dy += 14;
+        entityListY = dy;
+        if (nearbyEntityTypes.isEmpty()) {
+            ctx.drawTextWithShadow(textRenderer, Text.literal("  No entities nearby"),
+                    lx + 8, dy, C_TEXT3);
+            dy += LIST_ITEM_H;
+        } else {
+            for (String eId : nearbyEntityTypes) {
+                boolean selected = entityWL.contains(eId);
+                String label = shortId(eId);
+                int itemColor = selected ? C_SUCCESS : C_TEXT3;
+                String prefix = selected ? "\u2714 " : "\u2718 ";
+                boolean hovered = mx >= lx + 8 && mx < rEdge && my >= dy && my < dy + LIST_ITEM_H;
+                if (hovered) {
+                    ctx.fill(lx + 4, dy - 1, rEdge, dy + LIST_ITEM_H - 1, 0x22FFFFFF);
+                }
+                ctx.drawTextWithShadow(textRenderer, Text.literal(prefix + label),
+                        lx + 12, dy + 2, itemColor);
+                dy += LIST_ITEM_H;
+            }
+        }
+        dy += 8;
+
+        // ── Blocks ESP section ────────────────────────────────────────
+        dy += 10;
+        dy = drawSectionHeader(ctx, lx, dy, "Blocks ESP");
+
+        animBlockEsp = Anim.smooth(animBlockEsp, optBlockEsp ? 1f : 0f, 20f);
+        ctx.drawTextWithShadow(textRenderer, Text.literal("Enable Blocks ESP"),
+                lx, dy + (rowH - 8) / 2, C_TEXT);
+        int beTgX = rEdge - tw, beTgY = dy + (rowH - th) / 2;
+        ToggleRenderer.draw(ctx, beTgX, beTgY, animBlockEsp);
+        blockEspTgBounds[0] = beTgX; blockEspTgBounds[1] = beTgY;
+        blockEspTgBounds[2] = tw;    blockEspTgBounds[3] = th;
+        dy += rowH + 8;
+
+        // Block ESP radius cycler
+        String brVal = optBlockEspRadius + " blk";
+        int brW = textRenderer.getWidth(brVal) + 12;
+        ctx.drawTextWithShadow(textRenderer, Text.literal("Scan Radius:"), lx + 16, dy + 4, C_TEXT2);
+        int brValX = rEdge - brW - 28;
+        blockRadiusLeftX  = brValX - 20;
+        blockRadiusRightX = brValX + brW + 4;
+        blockRadiusBtnY   = dy;
+        boolean brHL = mx >= blockRadiusLeftX  && mx < blockRadiusLeftX  + 16 && my >= dy && my < dy + 18;
+        boolean brHR = mx >= blockRadiusRightX && mx < blockRadiusRightX + 16 && my >= dy && my < dy + 18;
+        RoundedRectRenderer.draw(ctx, blockRadiusLeftX,  dy, 16, 18, RB, brHL ? C_NAV_ACT : C_NAV_BG);
+        RoundedRectRenderer.draw(ctx, blockRadiusRightX, dy, 16, 18, RB, brHR ? C_NAV_ACT : C_NAV_BG);
+        ctx.drawCenteredTextWithShadow(textRenderer, Text.literal("<"), blockRadiusLeftX + 8,  dy + 5, C_TEXT);
+        ctx.drawCenteredTextWithShadow(textRenderer, Text.literal(">"), blockRadiusRightX + 8, dy + 5, C_TEXT);
+        RoundedRectRenderer.draw(ctx, brValX, dy, brW, 18, RB, C_CARD);
+        ctx.drawCenteredTextWithShadow(textRenderer, Text.literal(brVal),
+                brValX + brW / 2, dy + 5, C_TEXT);
+        dy += 28;
+
+        // Block list (clickable rows)
+        ctx.drawTextWithShadow(textRenderer, Text.literal("Nearby blocks:"),
+                lx + 8, dy, C_TEXT2);
+        dy += 14;
+        blockListY = dy;
+        if (nearbyBlockTypes.isEmpty()) {
+            ctx.drawTextWithShadow(textRenderer, Text.literal("  No interesting blocks nearby"),
+                    lx + 8, dy, C_TEXT3);
+            dy += LIST_ITEM_H;
+        } else {
+            for (String bId : nearbyBlockTypes) {
+                boolean selected = blockWL.contains(bId);
+                String label = shortId(bId);
+                int itemColor = selected ? C_SUCCESS : C_TEXT3;
+                String prefix = selected ? "\u2714 " : "\u2718 ";
+                boolean hovered = mx >= lx + 8 && mx < rEdge && my >= dy && my < dy + LIST_ITEM_H;
+                if (hovered) {
+                    ctx.fill(lx + 4, dy - 1, rEdge, dy + LIST_ITEM_H - 1, 0x22FFFFFF);
+                }
+                ctx.drawTextWithShadow(textRenderer, Text.literal(prefix + label),
+                        lx + 12, dy + 2, itemColor);
+                dy += LIST_ITEM_H;
+            }
+        }
+
+        ctx.disableScissor();
+    }
+
+    /** Strip "minecraft:" prefix for display, keep modded namespace. */
+    private static String shortId(String id) {
+        return id.startsWith("minecraft:") ? id.substring("minecraft:".length()) : id;
+    }
+
+    /** Scan nearby living entities within 20 blocks and cache unique type IDs. */
+    private void scanNearbyEntities(MinecraftClient mc) {
+        nearbyEntityTypes.clear();
+        if (mc.player == null || mc.world == null) return;
+        double px = mc.player.getX(), py = mc.player.getY(), pz = mc.player.getZ();
+        double r = 20;
+        Box box = new Box(px - r, py - r, pz - r, px + r, py + r, pz + r);
+        Set<String> seen = new LinkedHashSet<>();
+        for (Entity e : mc.world.getEntitiesByClass(LivingEntity.class, box,
+                le -> le != mc.player && le.isAlive())) {
+            String id = Registries.ENTITY_TYPE.getId(e.getType()).toString();
+            seen.add(id);
+        }
+        nearbyEntityTypes.addAll(seen);
+    }
+
+    /** Scan nearby blocks within ESP radius and cache unique non-boring type IDs. */
+    private void scanNearbyBlocks(MinecraftClient mc, ModConfig cfg) {
+        nearbyBlockTypes.clear();
+        if (mc.player == null || mc.world == null) return;
+        BlockPos center = mc.player.getBlockPos();
+        int r = cfg.getBlockEspRadius();
+        Set<String> seen = new LinkedHashSet<>();
+        for (int x = -r; x <= r; x++) {
+            for (int y = -r; y <= r; y++) {
+                for (int z = -r; z <= r; z++) {
+                    BlockPos pos = center.add(x, y, z);
+                    String id = Registries.BLOCK.getId(mc.world.getBlockState(pos).getBlock()).toString();
+                    if (!BORING_BLOCKS.contains(id)) {
+                        seen.add(id);
+                    }
+                }
+            }
+        }
+        nearbyBlockTypes.addAll(seen);
+    }
+
     // ═══════════════════════════════════════════════════════════════════
     // Input
     // ═══════════════════════════════════════════════════════════════════
 
     @Override
-    public boolean mouseClicked(double mx, double my, int btn) {
+    public boolean mouseClicked(Click click, boolean handled) {
+        double mx = click.x(), my = click.y();
+        int btn = click.button();
         int imx = (int) mx, imy = (int) my;
 
         // Outside panel
@@ -502,12 +953,16 @@ public class EasyBlockGui extends BasePopupScreen {
 
         // Tab buttons
         if (imy >= tabY && imy < tabY + tabH) {
-            if (imx >= tabMacrosX && imx < tabMacrosX + tabW) { activeTab = 0; return true; }
-            if (imx >= tabFarmX && imx < tabFarmX + tabW)     { activeTab = 1; return true; }
+            if (imx >= tabMacrosX && imx < tabMacrosX + tabW)     { activeTab = 0; return true; }
+            if (imx >= tabFarmX && imx < tabFarmX + tabW)         { activeTab = 1; return true; }
+            if (imx >= tabVisualsX && imx < tabVisualsX + tabW)   { activeTab = 2; return true; }
+            if (imx >= tabMiscX && imx < tabMiscX + tabW)         { activeTab = 3; return true; }
         }
 
         if (activeTab == 0) return handleMacrosClick(imx, imy);
-        else                return handleAutoFarmClick(imx, imy);
+        else if (activeTab == 1) return handleAutoFarmClick(imx, imy);
+        else if (activeTab == 2) return handleVisualsClick(imx, imy);
+        else return handleMiscClick(imx, imy);
     }
 
     private boolean handleMacrosClick(int imx, int imy) {
@@ -625,6 +1080,175 @@ public class EasyBlockGui extends BasePopupScreen {
             }
         }
 
+        // Auto Farmer toggle
+        if (farmerTgBounds[2] > 0
+                && imx >= farmerTgBounds[0] && imx < farmerTgBounds[0] + farmerTgBounds[2]
+                && imy >= farmerTgBounds[1] && imy < farmerTgBounds[1] + farmerTgBounds[3]) {
+            optAutoFarmer = !optAutoFarmer;
+            syncFarmer();
+            return true;
+        }
+
+        // Auto Farmer direction button
+        if (farmerDirBtnW > 0 && imx >= farmerDirBtnX && imx < farmerDirBtnX + farmerDirBtnW
+                && imy >= farmerDirBtnY && imy < farmerDirBtnY + farmerDirBtnH) {
+            optFarmerDir = (optFarmerDir == AutoFarmerManager.HorizontalDir.LEFT)
+                    ? AutoFarmerManager.HorizontalDir.RIGHT
+                    : AutoFarmerManager.HorizontalDir.LEFT;
+            syncFarmer();
+            return true;
+        }
+
+        // Auto Attack toggle
+        if (attackTgBounds[2] > 0
+                && imx >= attackTgBounds[0] && imx < attackTgBounds[0] + attackTgBounds[2]
+                && imy >= attackTgBounds[1] && imy < attackTgBounds[1] + attackTgBounds[3]) {
+            optAutoAttack = !optAutoAttack;
+            syncAutoAttack();
+            return true;
+        }
+
+        // Auto Attack priority button
+        if (attackPriorityBtnW > 0
+                && imx >= attackPriorityBtnX && imx < attackPriorityBtnX + attackPriorityBtnW
+                && imy >= attackPriorityBtnY && imy < attackPriorityBtnY + attackPriorityBtnH) {
+            optAttackPriority = (optAttackPriority == AutoAttackManager.PriorityMode.NEAREST)
+                    ? AutoAttackManager.PriorityMode.LOWEST_HEALTH
+                    : AutoAttackManager.PriorityMode.NEAREST;
+            syncAutoAttack();
+            return true;
+        }
+
+        // Auto Attack range cycler
+        if (imy >= attackRangeBtnY && imy < attackRangeBtnY + 18) {
+            if (imx >= attackRangeLeftX && imx < attackRangeLeftX + 16) {
+                optAttackRange = Math.max(2.0f, optAttackRange - 0.5f);
+                syncAutoAttack();
+                return true;
+            }
+            if (imx >= attackRangeRightX && imx < attackRangeRightX + 16) {
+                optAttackRange = Math.min(8.0f, optAttackRange + 0.5f);
+                syncAutoAttack();
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private boolean handleVisualsClick(int imx, int imy) {
+        // Target ESP toggle
+        if (hitTg(imx, imy, targetEspTgBounds)) {
+            optTargetEsp = !optTargetEsp;
+            syncVisuals();
+            return true;
+        }
+
+        // Entities ESP toggle
+        if (hitTg(imx, imy, entitiesEspTgBounds)) {
+            optEntitiesEsp = !optEntitiesEsp;
+            syncVisuals();
+            return true;
+        }
+
+        // Block ESP toggle
+        if (hitTg(imx, imy, blockEspTgBounds)) {
+            optBlockEsp = !optBlockEsp;
+            syncVisuals();
+            return true;
+        }
+
+        // Block ESP radius cycler
+        if (imy >= blockRadiusBtnY && imy < blockRadiusBtnY + 18) {
+            if (imx >= blockRadiusLeftX && imx < blockRadiusLeftX + 16) {
+                optBlockEspRadius = Math.max(4, optBlockEspRadius - 2);
+                syncVisuals();
+                return true;
+            }
+            if (imx >= blockRadiusRightX && imx < blockRadiusRightX + 16) {
+                optBlockEspRadius = Math.min(32, optBlockEspRadius + 2);
+                syncVisuals();
+                return true;
+            }
+        }
+
+        int lx = px + 24;
+        int rEdge = px + pw - 24;
+
+        // Entity list item click
+        if (!nearbyEntityTypes.isEmpty() && imx >= lx + 4 && imx < rEdge) {
+            for (int i = 0; i < nearbyEntityTypes.size(); i++) {
+                int itemY = entityListY + i * LIST_ITEM_H;
+                if (imy >= itemY && imy < itemY + LIST_ITEM_H) {
+                    String id = nearbyEntityTypes.get(i);
+                    ModConfig cfg = MacroModClient.getConfigManager().getConfig();
+                    List<String> wl = cfg.getEntityWhitelist();
+                    if (wl.contains(id)) {
+                        wl.remove(id);
+                    } else {
+                        wl.add(id);
+                    }
+                    MacroModClient.getConfigManager().save();
+                    return true;
+                }
+            }
+        }
+
+        // Block list item click
+        if (!nearbyBlockTypes.isEmpty() && imx >= lx + 4 && imx < rEdge) {
+            for (int i = 0; i < nearbyBlockTypes.size(); i++) {
+                int itemY = blockListY + i * LIST_ITEM_H;
+                if (imy >= itemY && imy < itemY + LIST_ITEM_H) {
+                    String id = nearbyBlockTypes.get(i);
+                    ModConfig cfg = MacroModClient.getConfigManager().getConfig();
+                    List<String> wl = cfg.getBlockWhitelist();
+                    if (wl.contains(id)) {
+                        wl.remove(id);
+                    } else {
+                        wl.add(id);
+                    }
+                    MacroModClient.getConfigManager().save();
+                    return true;
+                }
+            }
+        }
+
+        return false;
+    }
+
+    private boolean handleMiscClick(int imx, int imy) {
+        // Freelook toggle
+        if (hitTg(imx, imy, freelookTgBounds)) {
+            optFreelook = !optFreelook;
+            if (optFreelook) {
+                FreelookManager.getInstance().enable();
+            } else {
+                FreelookManager.getInstance().disable();
+            }
+            return true;
+        }
+
+        // FOV cycler
+        if (imy >= fovBtnY && imy < fovBtnY + 18) {
+            if (imx >= fovLeftX && imx < fovLeftX + 16) {
+                optFOV = Math.max(30, optFOV - 5);
+                syncFOV();
+                return true;
+            }
+            if (imx >= fovRightX && imx < fovRightX + 16) {
+                optFOV = Math.min(110, optFOV + 5);
+                syncFOV();
+                return true;
+            }
+        }
+
+        // Debug logging toggle
+        if (hitTg(imx, imy, debugLogTgBounds)) {
+            optDebugLogging = !optDebugLogging;
+            syncDebug();
+            return true;
+        }
+
         return false;
     }
 
@@ -633,6 +1257,12 @@ public class EasyBlockGui extends BasePopupScreen {
         if (activeTab == 0 && mx >= px && mx < px + SIDEBAR_W
                 && my >= py + HEADER_H && my < py + ph - FOOTER_H) {
             scrollY = Math.max(0, Math.min(maxScrollY, scrollY - (int) (vAmt * 14)));
+            return true;
+        }
+        if (activeTab == 2 && mx >= px && mx < px + pw
+                && my >= py + HEADER_H && my < py + ph) {
+            visualsScrollY = Math.max(0, Math.min(visualsMaxScrollY,
+                    visualsScrollY - (int) (vAmt * 14)));
             return true;
         }
         return super.mouseScrolled(mx, my, hAmt, vAmt);
@@ -670,5 +1300,48 @@ public class EasyBlockGui extends BasePopupScreen {
     private void syncFish() {
         AutoFishingManager.getInstance().setEnabled(optAutoFish);
         AutoFishingManager.getInstance().setAttackConfig(optFishAttack, optFishAttackDistance, optFishAttackSlot);
+    }
+
+    private void syncFarmer() {
+        AutoFarmerManager farmer = AutoFarmerManager.getInstance();
+        farmer.setStartDirection(optFarmerDir);
+        if (optAutoFarmer) {
+            farmer.enable();
+        } else {
+            farmer.disable();
+        }
+    }
+
+    private void syncAutoAttack() {
+        AutoAttackManager aam = AutoAttackManager.getInstance();
+        aam.setAttackRange(optAttackRange);
+        aam.setPriorityMode(optAttackPriority);
+        if (optAutoAttack) {
+            aam.enable();
+        } else {
+            aam.disable();
+        }
+    }
+
+    private void syncVisuals() {
+        ModConfig cfg = MacroModClient.getConfigManager().getConfig();
+        cfg.setTargetEspEnabled(optTargetEsp);
+        cfg.setEntitiesEspEnabled(optEntitiesEsp);
+        cfg.setBlockEspEnabled(optBlockEsp);
+        cfg.setBlockEspRadius(optBlockEspRadius);
+        MacroModClient.getConfigManager().save();
+    }
+
+    private void syncFOV() {
+        FreelookManager.getInstance().setFreelookFov(optFOV);
+        ModConfig cfg = MacroModClient.getConfigManager().getConfig();
+        cfg.setFreelookFov(optFOV);
+        MacroModClient.getConfigManager().save();
+    }
+
+    private void syncDebug() {
+        ModConfig cfg = MacroModClient.getConfigManager().getConfig();
+        cfg.setDebugLogging(optDebugLogging);
+        MacroModClient.getConfigManager().save();
     }
 }

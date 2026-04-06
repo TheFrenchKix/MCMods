@@ -100,7 +100,7 @@ public class MovementHelper {
      */
     public void moveTowards(ClientPlayerEntity player, BlockPos target) {
         Vec3d center  = Vec3d.ofCenter(target);
-        Vec3d playerPos = player.getPos();
+        Vec3d playerPos = new Vec3d(player.getX(), player.getY(), player.getZ());
         float wantYaw = yawToward(playerPos, center);
         float dYaw    = wrapAngle(wantYaw - player.getYaw());
 
@@ -139,7 +139,7 @@ public class MovementHelper {
      */
     public void forwardToBlock(ClientPlayerEntity player, BlockPos target) {
         Vec3d center  = Vec3d.ofCenter(target);
-        Vec3d playerPos = player.getPos();
+        Vec3d playerPos = new Vec3d(player.getX(), player.getY(), player.getZ());
         float wantYaw = yawToward(playerPos, center);
         float dYaw    = wrapAngle(wantYaw - player.getYaw());
 
@@ -195,7 +195,7 @@ public class MovementHelper {
      * that can occur when approaching waypoints at 45° angles.
      */
     public boolean hasReachedWaypoint(ClientPlayerEntity player, BlockPos target) {
-        Vec3d pos    = player.getPos();
+        Vec3d pos    = new Vec3d(player.getX(), player.getY(), player.getZ());
         Vec3d center = Vec3d.ofCenter(target);
         double dx = pos.x - center.x;
         double dz = pos.z - center.z;
@@ -227,7 +227,7 @@ public class MovementHelper {
         }
 
         // 2. Horizontally stuck → try a jump to dislodge
-        Vec3d pos = player.getPos();
+        Vec3d pos = new Vec3d(player.getX(), player.getY(), player.getZ());
         if (lastStuckPos == null) {
             lastStuckPos = pos;
             stuckStart   = System.currentTimeMillis();

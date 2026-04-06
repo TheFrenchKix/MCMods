@@ -80,7 +80,7 @@ public final class PlayerUtils {
      * Checks if the player has arrived at a target position within the given radius.
      */
     public static boolean isArrived(ClientPlayerEntity player, BlockPos target, float radius) {
-        Vec3d playerPos = player.getPos();
+        Vec3d playerPos = new Vec3d(player.getX(), player.getY(), player.getZ());
         Vec3d targetCenter = Vec3d.ofCenter(target);
         double dx = playerPos.x - targetCenter.x;
         double dz = playerPos.z - targetCenter.z;
@@ -108,7 +108,7 @@ public final class PlayerUtils {
      */
     public static boolean hasHostileNearby(ClientPlayerEntity player, double radius) {
         Box box = player.getBoundingBox().expand(radius);
-        List<HostileEntity> hostiles = player.getWorld().getEntitiesByClass(
+        List<HostileEntity> hostiles = player.getEntityWorld().getEntitiesByClass(
                 HostileEntity.class, box, e -> true
         );
         return !hostiles.isEmpty();
@@ -125,7 +125,7 @@ public final class PlayerUtils {
      * Returns the horizontal distance the player has moved since the given position.
      */
     public static double horizontalDistanceTo(ClientPlayerEntity player, Vec3d from) {
-        Vec3d current = player.getPos();
+        Vec3d current = new Vec3d(player.getX(), player.getY(), player.getZ());
         double dx = current.x - from.x;
         double dz = current.z - from.z;
         return Math.sqrt(dx * dx + dz * dz);

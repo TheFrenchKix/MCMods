@@ -10,6 +10,9 @@
   "key.macromod.toggle_freelook": "Toggle Freelook",
   "key.macromod.toggle_keybind_hud": "Toggle Keybind HUD",
   "key.macromod.debug_info": "Debug Info (Entity/Block)",
+  "key.macromod.toggle_auto_fish": "Toggle Auto Fish",
+  "key.macromod.toggle_auto_farmer": "Toggle Auto Farmer",
+  "key.macromod.toggle_auto_attack": "Toggle Auto Attack",
 
   "macromod.screen.title": "Macro Manager",
   "macromod.screen.edit.title": "Edit Macro",

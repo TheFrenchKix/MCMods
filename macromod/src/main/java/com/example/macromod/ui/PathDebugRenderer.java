@@ -5,8 +5,9 @@ import com.example.macromod.manager.MacroExecutor;
 import com.example.macromod.model.Macro;
 import com.example.macromod.model.MacroState;
 import com.example.macromod.model.MacroStep;
-import net.fabricmc.fabric.api.client.rendering.v1.WorldRenderContext;
+import net.fabricmc.fabric.api.client.rendering.v1.world.WorldRenderContext;
 import net.minecraft.client.render.RenderLayer;
+import net.minecraft.client.render.RenderLayers;
 import net.minecraft.client.render.VertexConsumer;
 import net.minecraft.client.render.VertexConsumerProvider;
 import net.minecraft.client.util.math.MatrixStack;
@@ -44,21 +45,18 @@ public class PathDebugRenderer {
 
         VertexConsumerProvider consumers = context.consumers();
         if (consumers == null) return;
-        VertexConsumerProvider.Immediate immediate =
-                consumers instanceof VertexConsumerProvider.Immediate
-                ? (VertexConsumerProvider.Immediate) consumers : null;
 
-        MatrixStack matrices = context.matrixStack();
+        MatrixStack matrices = context.matrices();
         if (matrices == null) return;
 
         Macro macro = executor.getCurrentMacro();
         if (macro == null) return;
 
-        Vec3d camPos = context.camera().getPos();
+        Vec3d camPos = context.gameRenderer().getCamera().getCameraPos();
         matrices.push();
         matrices.translate(-camPos.x, -camPos.y, -camPos.z);
 
-        VertexConsumer vc = consumers.getBuffer(RenderLayer.getLines());
+        VertexConsumer vc = consumers.getBuffer(RenderLayers.lines());
 
         // ── Step destination markers (all steps) ──────────────────
         drawStepDestinations(matrices, vc, macro.getSteps(), executor.getCurrentStepIndex());
@@ -71,7 +69,6 @@ public class PathDebugRenderer {
             drawPathLines(matrices, vc, path, pathIdx);
         }
 
-        if (immediate != null) immediate.draw(RenderLayer.getLines());
         matrices.pop();
     }
 
@@ -147,9 +144,9 @@ public class PathDebugRenderer {
             float nz = (float) (dz / len);
 
             vc.vertex(posMat, (float) from.x, (float) from.y, (float) from.z)
-              .color(r, g, b, a).normal(nx, ny, nz);
+              .color(r, g, b, a).normal(nx, ny, nz).lineWidth(2.5f);
             vc.vertex(posMat, (float) to.x, (float) to.y, (float) to.z)
-              .color(r, g, b, a).normal(nx, ny, nz);
+              .color(r, g, b, a).normal(nx, ny, nz).lineWidth(2.5f);
         }
     }
 
@@ -183,7 +180,7 @@ public class PathDebugRenderer {
                                  float r, float g, float b, float a) {
         float dx = (float)(x2 - x1), dy = (float)(y2 - y1), dz = (float)(z2 - z1);
         float len = Math.max((float) Math.sqrt(dx * dx + dy * dy + dz * dz), 1e-4f);
-        vc.vertex(m, (float) x1, (float) y1, (float) z1).color(r, g, b, a).normal(dx / len, dy / len, dz / len);
-        vc.vertex(m, (float) x2, (float) y2, (float) z2).color(r, g, b, a).normal(dx / len, dy / len, dz / len);
+        vc.vertex(m, (float) x1, (float) y1, (float) z1).color(r, g, b, a).normal(dx / len, dy / len, dz / len).lineWidth(2.5f);
+        vc.vertex(m, (float) x2, (float) y2, (float) z2).color(r, g, b, a).normal(dx / len, dy / len, dz / len).lineWidth(2.5f);
     }
 }

@@ -1,9 +1,13 @@
 {
   "required": true,
   "minVersion": "0.8",
+  "package": "com.example.macromod.mixin",
   "compatibilityLevel": "JAVA_21",
   "client": [
-    "com.example.macromod.mixin.ClientPlayerEntityMixin"
+    "ClientPlayerEntityMixin",
+    "MouseMixin",
+    "CameraUpdateMixin",
+    "GameRendererMixin"
   ],
   "injectors": {
     "defaultRequire": 1

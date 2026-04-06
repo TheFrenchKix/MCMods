@@ -1,6 +1,8 @@
 package com.example.macromod.ui;
 
 import com.example.macromod.MacroModClient;
+import com.example.macromod.manager.AutoAttackManager;
+import com.example.macromod.manager.AutoFishingManager;
 import com.example.macromod.manager.MacroExecutor;
 import com.example.macromod.model.Macro;
 import com.example.macromod.model.MacroState;
@@ -37,15 +39,21 @@ public class HudOverlay {
     public void render(DrawContext context, RenderTickCounter tickCounter) {
         MinecraftClient client = MinecraftClient.getInstance();
         if (client.player == null) return;
-        if (!MacroModClient.getConfigManager().getConfig().isHudVisible()) return;
+
+        var cfgMgr = MacroModClient.getConfigManager();
+        if (cfgMgr == null || !cfgMgr.getConfig().isHudVisible()) return;
 
         MacroExecutor executor = MacroModClient.getExecutor();
         MacroRecorder recorder = MacroModClient.getRecorder();
+        AutoAttackManager aam = AutoAttackManager.getInstance();
+        AutoFishingManager afm = AutoFishingManager.getInstance();
 
-        boolean executorActive = executor.isRunning() || executor.getState() == MacroState.PAUSED;
-        boolean recorderActive = recorder.getState() != RecordingState.IDLE;
+        boolean executorActive = executor != null && (executor.isRunning() || executor.getState() == MacroState.PAUSED);
+        boolean recorderActive = recorder != null && recorder.getState() != RecordingState.IDLE;
+        boolean autoAttackActive = aam != null && aam.isEnabled();
+        boolean autoFishActive = afm != null && afm.isEnabled();
 
-        if (!executorActive && !recorderActive) return;
+        if (!executorActive && !recorderActive && !autoAttackActive && !autoFishActive) return;
 
         TextRenderer textRenderer = client.textRenderer;
         int x = PADDING + 2;
@@ -55,6 +63,8 @@ public class HudOverlay {
             renderRecordingHud(context, textRenderer, recorder, x, y);
         } else if (executorActive) {
             renderExecutionHud(context, textRenderer, executor, x, y);
+        } else {
+            renderModulesHud(context, textRenderer, aam, afm, x, y);
         }
     }
 
@@ -162,6 +172,30 @@ public class HudOverlay {
         context.fill(x, y, x + BAR_WIDTH, y + BAR_HEIGHT, BAR_BG_COLOR);
         if (filledWidth > 0) {
             context.fill(x, y, x + filledWidth, y + BAR_HEIGHT, BAR_FG_COLOR);
+        }
+    }
+
+    private void renderModulesHud(DrawContext context, TextRenderer textRenderer,
+                                    AutoAttackManager aam, AutoFishingManager afm, int x, int y) {
+        int width = BAR_WIDTH + PADDING * 4;
+        int height = LINE_HEIGHT * 2 + PADDING * 2;
+        context.fill(x - PADDING, y - PADDING, x + width, y + height, BG_COLOR);
+
+        if (aam != null && aam.isEnabled()) {
+            String targetName = aam.getCurrentTarget() != null
+                    ? aam.getCurrentTarget().getName().getString()
+                    : "scanning...";
+            context.drawTextWithShadow(textRenderer,
+                    Text.literal("⚔ Auto Attack: " + targetName).formatted(Formatting.RED),
+                    x, y, 0xFFFFFF);
+            y += LINE_HEIGHT;
+        }
+
+        if (afm != null && afm.isEnabled()) {
+            context.drawTextWithShadow(textRenderer,
+                    Text.literal("🎣 Auto Fish").formatted(Formatting.AQUA),
+                    x, y, 0xFFFFFF);
+            y += LINE_HEIGHT;
         }
     }
 

@@ -2,6 +2,7 @@ package com.example.macromod.ui.easyblock;
 
 import net.minecraft.client.gui.DrawContext;
 import net.minecraft.client.gui.screen.Screen;
+import net.minecraft.client.input.KeyInput;
 import net.minecraft.text.Text;
 
 /**
@@ -55,14 +56,14 @@ public abstract class BasePopupScreen extends Screen {
         ctx.fill(0, 0, width, height, alpha << 24);
 
         // Scale transform around screen center
-        ctx.getMatrices().push();
-        ctx.getMatrices().translate(width / 2.0, height / 2.0, 0);
-        ctx.getMatrices().scale(percent, percent, 1f);
-        ctx.getMatrices().translate(-width / 2.0, -height / 2.0, 0);
+        ctx.getMatrices().pushMatrix();
+        ctx.getMatrices().translate((float)(width / 2.0), (float)(height / 2.0));
+        ctx.getMatrices().scale(percent, percent);
+        ctx.getMatrices().translate((float)(-width / 2.0), (float)(-height / 2.0));
 
         drawScreen(ctx, mx, my, delta);
 
-        ctx.getMatrices().pop();
+        ctx.getMatrices().popMatrix();
     }
 
     /** Start the close animation. Screen closes when animation completes. */
@@ -81,11 +82,12 @@ public abstract class BasePopupScreen extends Screen {
     }
 
     @Override
-    public boolean keyPressed(int keyCode, int scanCode, int mods) {
+    public boolean keyPressed(KeyInput key) {
+        int keyCode = key.key();
         if (keyCode == 256) { // Escape
             animClose();
             return true;
         }
-        return super.keyPressed(keyCode, scanCode, mods);
+        return super.keyPressed(key);
     }
 }

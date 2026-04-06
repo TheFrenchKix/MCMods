@@ -92,7 +92,7 @@ public class FabricMinecraftAdapter implements MinecraftAdapter {
     public Vector3d getPlayerPosition() {
         ClientPlayerEntity player = getPlayer();
         if (player == null) return null;
-        Vec3d pos = player.getPos();
+        Vec3d pos = new Vec3d(player.getX(), player.getY(), player.getZ());
         return new Vector3d(pos.x, pos.y, pos.z);
     }
 
@@ -245,7 +245,7 @@ public class FabricMinecraftAdapter implements MinecraftAdapter {
     public void selectHotbarSlot(int slot) {
         ClientPlayerEntity player = getPlayer();
         if (player != null && slot >= 0 && slot <= 8) {
-            player.getInventory().selectedSlot = slot;
+            player.getInventory().setSelectedSlot(slot);
         }
     }
 

@@ -1,5 +1,6 @@
 package com.example.macromod.manager;
 
+import com.example.macromod.util.HumanReactionTime;
 import net.fabricmc.api.EnvType;
 import net.fabricmc.api.Environment;
 import net.minecraft.client.MinecraftClient;
@@ -91,6 +92,12 @@ public class AutoFishingManager {
     private Vec3d  killAimPoint               = null;
     private long   killAimRefreshMs           = 0L;
     private long   killAimRefreshInterval     = 700L;
+
+    // ── Reaction time per session ──────────────────────────────────────
+    private long recastDelayMs = RECAST_DELAY_MS;  // Randomized per cast cycle
+    private long biteReactionMs = 0L;              // Reaction time when bite detected
+    private long attackIntervalWithJitter = ATTACK_INTERVAL_MS; // Varies per attack
+
     private AutoFishingManager() {}
 
     // ── API ─────────────────────────────────────────────────────────
@@ -151,7 +158,7 @@ public class AutoFishingManager {
                     fishState    = FishState.WAITING;
                     stateStartMs = now;
                     lastBobberY  = bobber.getY();
-                    lastBobberPos = bobber.getPos();
+                    lastBobberPos = new Vec3d(bobber.getX(), bobber.getY(), bobber.getZ());
                 } else if (now - stateStartMs > CAST_TIMEOUT_MS) {
                     // No bobber after timeout — try again
                     fishState = FishState.IDLE;
@@ -170,7 +177,7 @@ public class AutoFishingManager {
 
                 // Track bobber position each tick for attack scan later
                 double currentY = bobber.getY();
-                lastBobberPos   = bobber.getPos();
+                lastBobberPos   = new Vec3d(bobber.getX(), bobber.getY(), bobber.getZ());
 
                 // Signal 1: position dip (bobber pulled down by fish)
                 if (!Double.isNaN(lastBobberY)
@@ -196,7 +203,7 @@ public class AutoFishingManager {
 
             case REELING -> {
                 // Keep updating bobber pos while it still exists
-                if (bobber != null) lastBobberPos = bobber.getPos();
+                if (bobber != null) lastBobberPos = new Vec3d(bobber.getX(), bobber.getY(), bobber.getZ());
 
                 if (bobber == null || now - stateStartMs > 1_500L) {
                     if (attackEnabled && lastBobberPos != null) {
@@ -213,7 +220,9 @@ public class AutoFishingManager {
             }
 
             case WAITING_FOR_PREY -> {
-                if (now - stateStartMs > PREY_SCAN_MS) {
+                // Add human reaction delay to prey scanning
+                long preScanDelayMs = PREY_SCAN_MS + HumanReactionTime.getReactionDelay(HumanReactionTime.ReactionProfile.SLOW);
+                if (now - stateStartMs > preScanDelayMs) {
                     // Nothing spawned — recast
                     fishState    = FishState.DELAY;
                     stateStartMs = now;
@@ -271,12 +280,14 @@ public class AutoFishingManager {
                 // Smooth aim towards randomised point
                 smoothAimAt(player, killAimPoint);
 
-                // Attack on interval (10 game ticks = 500 ms)
-                if (now - lastAttackMs >= ATTACK_INTERVAL_MS) {
+                // Attack on interval with jitter for human-like tempo
+                // Regenerate jitter each attack cycle to vary timing slightly
+                if (now - lastAttackMs >= attackIntervalWithJitter) {
+                    attackIntervalWithJitter = HumanReactionTime.getAttackIntervalWithJitter(ATTACK_INTERVAL_MS, 20);
                     if (attackModeDistance) {
                         // Distance: equip chosen item and right-click entity
                         if (attackHotbarSlot >= 0)
-                            player.getInventory().selectedSlot = attackHotbarSlot;
+                            player.getInventory().setSelectedSlot(attackHotbarSlot);
                         client.interactionManager.interactEntity(player, killTarget, Hand.MAIN_HAND);
                     } else {
                         // Close: standard left-click attack
@@ -290,7 +301,8 @@ public class AutoFishingManager {
             }
 
             case DELAY -> {
-                if (now - stateStartMs >= RECAST_DELAY_MS) {
+                // Use reaction-time-based recast delay instead of fixed
+                if (now - stateStartMs >= recastDelayMs) {
                     // Re-equip fishing rod for next cast
                     if (!hasRodInHand(player)) equipRod(player);
                     fishState = FishState.IDLE;
@@ -309,7 +321,7 @@ public class AutoFishingManager {
     private boolean equipRod(ClientPlayerEntity player) {
         for (int i = 0; i < 9; i++) {
             if (player.getInventory().getStack(i).getItem() instanceof FishingRodItem) {
-                player.getInventory().selectedSlot = i;
+                player.getInventory().setSelectedSlot(i);
                 return true;
             }
         }
@@ -367,7 +379,7 @@ public class AutoFishingManager {
                                     ClientPlayerEntity player, Entity target) {
         if (client.world == null) return false;
         Vec3d eyes   = player.getEyePos();
-        Vec3d centre = target.getPos().add(0, target.getHeight() * 0.5, 0);
+        Vec3d centre = new Vec3d(target.getX(), target.getY() + target.getHeight() * 0.5, target.getZ());
         RaycastContext ctx = new RaycastContext(
                 eyes, centre,
                 RaycastContext.ShapeType.COLLIDER,
@@ -408,7 +420,7 @@ public class AutoFishingManager {
     /** Smoothly rotates the player towards {@code target} entity by at most {@value AIM_STEP_DEG}°/tick. */
     private void smoothAimAt(ClientPlayerEntity player, Entity target) {
         Vec3d eyes   = player.getEyePos();
-        Vec3d centre = target.getPos().add(0, target.getHeight() * 0.5, 0);
+        Vec3d centre = new Vec3d(target.getX(), target.getY() + target.getHeight() * 0.5, target.getZ());
         Vec3d delta  = centre.subtract(eyes).normalize();
 
         float targetYaw   = (float) Math.toDegrees(Math.atan2(-delta.x, delta.z));

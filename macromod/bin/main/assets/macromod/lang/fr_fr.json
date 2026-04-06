@@ -10,6 +10,9 @@
   "key.macromod.toggle_freelook": "Activer/Désactiver le mode libre",
   "key.macromod.toggle_keybind_hud": "Afficher/Masquer HUD des touches",
   "key.macromod.debug_info": "Info Débogage (Entité/Bloc)",
+  "key.macromod.toggle_auto_fish": "Activer/Désactiver la pêche auto",
+  "key.macromod.toggle_auto_farmer": "Activer/Désactiver la ferme auto",
+  "key.macromod.toggle_auto_attack": "Activer/Désactiver l'attaque auto",
 
   "macromod.screen.title": "Gestionnaire de Macros",
   "macromod.screen.edit.title": "Modifier la Macro",

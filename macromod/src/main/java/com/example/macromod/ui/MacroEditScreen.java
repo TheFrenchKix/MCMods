@@ -14,7 +14,9 @@ import net.fabricmc.api.Environment;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.gui.DrawContext;
 import net.minecraft.client.gui.screen.Screen;
+import net.minecraft.client.gui.Click;
 import net.minecraft.client.gui.widget.TextFieldWidget;
+import net.minecraft.client.input.KeyInput;
 import net.minecraft.entity.LivingEntity;
 import net.minecraft.registry.Registries;
 import net.minecraft.text.Text;
@@ -467,7 +469,9 @@ public class MacroEditScreen extends BasePopupScreen {
     // ═════════════════════════════════════════════════════════════════
 
     @Override
-    public boolean mouseClicked(double mx, double my, int btn) {
+    public boolean mouseClicked(Click click, boolean handled) {
+        double mx = click.x(), my = click.y();
+        int btn = click.button();
         int imx = (int) mx, imy = (int) my;
 
         // Click outside panel → close
@@ -478,8 +482,7 @@ public class MacroEditScreen extends BasePopupScreen {
 
         // Fixed section (name/desc fields) — delegate to Screen children
         if (imx < px + lw && imy >= py + HH && imy < scrollStartY) {
-            boolean handled = super.mouseClicked(mx, my, btn);
-            return handled;
+            return super.mouseClicked(click, handled);
         }
 
         // Toggles
@@ -560,7 +563,7 @@ public class MacroEditScreen extends BasePopupScreen {
         if (hoverSave)   { applyChanges(); animClose(); return true; }
         if (hoverCancel) { animClose(); return true; }
 
-        return super.mouseClicked(mx, my, btn);
+        return super.mouseClicked(click, handled);
     }
 
     @Override
@@ -577,7 +580,8 @@ public class MacroEditScreen extends BasePopupScreen {
     }
 
     @Override
-    public boolean keyPressed(int keyCode, int scanCode, int mods) {
+    public boolean keyPressed(KeyInput key) {
+        int keyCode = key.key();
         // Escape: unfocus field first, then close on second press
         if (keyCode == 256) {
             if (getFocused() != null) {
@@ -587,7 +591,7 @@ public class MacroEditScreen extends BasePopupScreen {
             animClose();
             return true;
         }
-        return super.keyPressed(keyCode, scanCode, mods);
+        return super.keyPressed(key);
     }
 
     // ═════════════════════════════════════════════════════════════════

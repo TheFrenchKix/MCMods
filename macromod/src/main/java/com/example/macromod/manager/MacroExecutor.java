@@ -7,6 +7,7 @@ import com.example.macromod.pathfinding.MovementHelper;
 import com.example.macromod.pathfinding.PathHandler;
 import com.example.macromod.pathfinding.PathFinder;
 import com.example.macromod.pathfinding.SmoothAim;
+import com.example.macromod.util.HumanReactionTime;
 
 import java.util.HashSet;
 import com.example.macromod.pathfinding.goal.ExactGoal;
@@ -24,6 +25,9 @@ import net.minecraft.util.Formatting;
 import net.minecraft.util.Hand;
 import net.minecraft.util.hit.BlockHitResult;
 import net.minecraft.util.hit.HitResult;
+import net.minecraft.block.BlockState;
+import net.minecraft.state.property.IntProperty;
+import net.minecraft.state.property.Property;
 import net.minecraft.util.math.BlockPos;
 import net.minecraft.util.math.Box;
 import net.minecraft.util.math.Vec3d;
@@ -97,10 +101,6 @@ public class MacroExecutor {
 
     // ─── Entity elimination mode (attackDanger) ─────────────────
     private boolean isEliminatingEnemies = false;
-    private MacroState savedStateBeforeEnemies = null;
-    private List<BlockPos> savedPathBeforeEnemies = null;
-    private int savedPathIndexBeforeEnemies = 0;
-    private BlockPos savedPositionBeforeEnemies = null;
 
     // ─── Mining LOS strafe ──────────────────────────────────────
     /** Block we are currently strafing to gain line-of-sight on. */
@@ -227,7 +227,7 @@ public class MacroExecutor {
         if (player == null) return;
 
         // Initialize line farm state
-        lineFarmStartPos = player.getPos();
+        lineFarmStartPos = new Vec3d(player.getX(), player.getY(), player.getZ());
         lineFarmCrosshairPos = player.getEyePos();
         lineFarmDirection = 0; // Start going left
         lineFarmDistance = 0;
@@ -321,9 +321,9 @@ public class MacroExecutor {
 
         // Track distance
         if (lastDistCheckPos != null) {
-            totalDistance += player.getPos().distanceTo(lastDistCheckPos);
+            totalDistance += new Vec3d(player.getX(), player.getY(), player.getZ()).distanceTo(lastDistCheckPos);
         }
-        lastDistCheckPos = player.getPos();
+        lastDistCheckPos = new Vec3d(player.getX(), player.getY(), player.getZ());
 
         // Entity attack system with attackDanger mode
         boolean isDuringMacro = state != MacroState.IDLE && state != MacroState.COMPLETED && state != MacroState.ERROR;
@@ -332,15 +332,17 @@ public class MacroExecutor {
             boolean hasEnemiesNearby = hasEntitiesInRange(player, world, currentMacro.getConfig());
             
             if (hasEnemiesNearby && !isEliminatingEnemies) {
-                // Enter entity elimination mode
+                // Enter entity elimination mode — fully cancel current route
                 isEliminatingEnemies = true;
-                savedStateBeforeEnemies = state;
-                savedPathBeforeEnemies = currentPath != null ? new ArrayList<>(currentPath) : null;
-                savedPathIndexBeforeEnemies = currentPathIndex;
-                savedPositionBeforeEnemies = player.getBlockPos();
                 LOGGER.info("Entering entity elimination mode from state {}", state);
                 movementHelper.releaseAllInputs();
-                currentMacro.getConfig().setAttackEnabled(true);
+                // Clear route so path-following keys don't interfere with attack movement
+                currentPath = null;
+                currentPathIndex = 0;
+                attackTarget = null;
+                attackChaseStartMs = -1L;
+                PathHandler _ph = MacroModClient.getPathHandler();
+                if (_ph != null) _ph.cancelPath();
             }
         }
 
@@ -348,25 +350,21 @@ public class MacroExecutor {
         if (isEliminatingEnemies) {
             boolean stillHasEnemies = hasEntitiesInRange(player, world, currentMacro.getConfig());
             if (!stillHasEnemies) {
-                // Exit entity elimination mode and restore state
+                // Exit entity elimination mode — re-pathfind from current position
                 isEliminatingEnemies = false;
-                LOGGER.info("All entities eliminated. Resuming macro from state {} at position {}",
-                    savedStateBeforeEnemies, savedPositionBeforeEnemies);
-                state = savedStateBeforeEnemies;
-                currentPath = savedPathBeforeEnemies;
-                currentPathIndex = savedPathIndexBeforeEnemies;
+                LOGGER.info("All entities eliminated. Re-pathfinding from {}", player.getBlockPos());
                 attackTarget = null;
                 attackChaseStartMs = -1L;
-                // Reset movement timer so the entity-chase duration doesn't
-                // count against the navigation timeout
+                // Force fresh pathfinding rather than restoring a stale saved path
+                currentPath = null;
+                currentPathIndex = 0;
                 moveStartMs = System.currentTimeMillis();
                 stuckSince  = -1L;
-                lastPosition = player.getPos();
+                lastPosition = new Vec3d(player.getX(), player.getY(), player.getZ());
+                state = MacroState.PATHFINDING;
             } else {
-                // Still have enemies - keep attacking, skip state machine
-                if (currentMacro.getConfig().isAttackEnabled()) {
-                    tickAttack(player, world, client);
-                }
+                // Still has enemies — attack current target (single target at a time)
+                tickAttack(player, world, client);
                 return; // Don't execute state machine while eliminating
             }
         }
@@ -522,7 +520,7 @@ public class MacroExecutor {
         currentPathIndex = 0;
         moveStartMs = System.currentTimeMillis();
         stuckSince = -1L;
-        lastPosition = player.getPos();
+        lastPosition = new Vec3d(player.getX(), player.getY(), player.getZ());
         movementHelper.resetJumpState();
         state = MacroState.MOVING;
     }
@@ -598,7 +596,7 @@ public class MacroExecutor {
                 if (stuckSince < 0) stuckSince = System.currentTimeMillis();
             } else {
                 stuckSince = -1L;
-                lastPosition = player.getPos();
+                lastPosition = new Vec3d(player.getX(), player.getY(), player.getZ());
             }
         }
 
@@ -670,7 +668,7 @@ public class MacroExecutor {
                 Vec3d currCenter = net.minecraft.util.math.Vec3d.ofCenter(currentPath.get(currentPathIndex));
                 Vec3d nextCenter = net.minecraft.util.math.Vec3d.ofCenter(currentPath.get(currentPathIndex + 1));
                 Vec3d seg        = nextCenter.subtract(currCenter);
-                Vec3d toPlayer   = player.getPos().subtract(currCenter);
+                Vec3d toPlayer   = new Vec3d(player.getX(), player.getY(), player.getZ()).subtract(currCenter);
                 double dot       = seg.dotProduct(toPlayer);
                 double segLenSq  = seg.dotProduct(seg);
 
@@ -816,7 +814,7 @@ public class MacroExecutor {
             blocksMinedTotal++;
             currentBlockTargetIndex++;
             isMiningBlock = false;
-            miningDelayEndMs = System.currentTimeMillis() + currentMacro.getConfig().getMiningDelay();
+            miningDelayEndMs = System.currentTimeMillis() + HumanReactionTime.getMiningReactionTime(currentMacro.getConfig().getMiningDelay());
             return;
         }
 
@@ -828,6 +826,24 @@ public class MacroExecutor {
                 currentBlockTargetIndex++;
                 isMiningBlock = false;
                 return;
+            }
+        }
+
+        // Skip unripe crops: if block has an 'age' property, only mine when at max age
+        BlockState blockState = world.getBlockState(blockPos);
+        for (Property<?> prop : blockState.getProperties()) {
+            if ("age".equals(prop.getName()) && prop instanceof IntProperty intProp) {
+                int currentAge = blockState.get(intProp);
+                int maxAge = intProp.getValues().stream().mapToInt(Integer::intValue).max().orElse(0);
+                if (currentAge < maxAge) {
+                    LOGGER.debug("[DBG] mine SKIP unripe: block={} age={}/{}", blockPos, currentAge, maxAge);
+                    target.setSkipped(true);
+                    blocksSkippedTotal++;
+                    currentBlockTargetIndex++;
+                    isMiningBlock = false;
+                    return;
+                }
+                break;
             }
         }
 
@@ -957,7 +973,7 @@ public class MacroExecutor {
             target.setMined(true);
             blocksMinedTotal++;
             isMiningBlock = false;
-            miningDelayEndMs = System.currentTimeMillis() + currentMacro.getConfig().getMiningDelay();
+            miningDelayEndMs = System.currentTimeMillis() + HumanReactionTime.getMiningReactionTime(currentMacro.getConfig().getMiningDelay());
             rescanAroundBlock(blockPos, world, step);
             currentBlockTargetIndex++;
             return;
@@ -984,13 +1000,12 @@ public class MacroExecutor {
         boolean isDuringMacro = state != MacroState.IDLE && state != MacroState.COMPLETED && state != MacroState.ERROR;
         boolean shouldAttackDuringRoute = cfg.isAttackDanger() && isDuringMacro;
 
-        // Clear dead / out-of-expanded-range target
-        if (attackTarget != null && (attackTarget.isDead() || attackTarget.getHealth() <= 0
-                || player.squaredDistanceTo(attackTarget) > (range * 2) * (range * 2))) {
+        // Release target only when dead — no range-based release to avoid jitter from target switching
+        if (attackTarget != null && (attackTarget.isDead() || attackTarget.getHealth() <= 0)) {
             attackTarget = null;
             attackChaseStartMs = -1L;
         }
-        // Chase timeout
+        // Release if chase timeout exceeded (entity escaped / unreachable)
         if (attackTarget != null && attackChaseStartMs > 0
                 && System.currentTimeMillis() - attackChaseStartMs > ATTACK_CHASE_TIMEOUT_MS) {
             attackTarget = null;
@@ -1023,7 +1038,7 @@ public class MacroExecutor {
             if (attackTarget != null) {
                 attackChaseStartMs = System.currentTimeMillis();
                 attackAimPoint = randomPointInBox(attackTarget.getBoundingBox());
-                attackAimRefreshInterval = 600L + ATTACK_RAND.nextInt(600);
+                attackAimRefreshInterval = HumanReactionTime.getAttackIntervalWithJitter(600, 50);
                 attackAimRefreshMs = System.currentTimeMillis();
                 
                 // Cancel path when starting attack to avoid camera jitter between pathfinding and entity position
@@ -1040,7 +1055,7 @@ public class MacroExecutor {
         long now = System.currentTimeMillis();
         if (attackAimPoint == null || now - attackAimRefreshMs > attackAimRefreshInterval) {
             attackAimPoint = randomPointInBox(attackTarget.getBoundingBox());
-            attackAimRefreshInterval = 600L + ATTACK_RAND.nextInt(600);
+            attackAimRefreshInterval = HumanReactionTime.getAttackIntervalWithJitter(600, 50);
             attackAimRefreshMs = now;
         }
 
@@ -1125,7 +1140,7 @@ public class MacroExecutor {
         // Hold left click continuously
         mc.options.attackKey.setPressed(true);
 
-        Vec3d playerPos = player.getPos();
+        Vec3d playerPos = new Vec3d(player.getX(), player.getY(), player.getZ());
         float playerYaw = player.getYaw();
         
         // Calculate movement direction based on pattern
@@ -1528,8 +1543,8 @@ public class MacroExecutor {
      * @return A BlockPos that is the intercept point away from the entity
      */
     private BlockPos getInterceptPositionAwayFromEntity(ClientPlayerEntity player, LivingEntity entity, double distanceBlocks) {
-        Vec3d playerPos = player.getPos();
-        Vec3d entityPos = entity.getPos();
+        Vec3d playerPos = new Vec3d(player.getX(), player.getY(), player.getZ());
+        Vec3d entityPos = new Vec3d(entity.getX(), entity.getY(), entity.getZ());
 
         // Calculate direction from entity to player
         Vec3d directionToPlayer = playerPos.subtract(entityPos);

@@ -2,6 +2,9 @@ package com.example.macromod;
 
 import com.example.macromod.command.MacroCommands;
 import com.example.macromod.config.ConfigManager;
+import com.example.macromod.manager.AutoAttackManager;
+import com.example.macromod.manager.AutoFarmerManager;
+import com.example.macromod.manager.FreelookManager;
 import com.example.macromod.manager.MacroExecutor;
 import com.example.macromod.manager.MacroManager;
 import com.example.macromod.pathfinding.PathHandler;
@@ -13,6 +16,7 @@ import com.example.macromod.ui.HudOverlay;
 import com.example.macromod.ui.KeybindHudOverlay;
 import com.example.macromod.ui.easyblock.EasyBlockGui;
 import com.example.macromod.ui.PathDebugRenderer;
+import com.example.macromod.ui.ESPRenderer;
 
 import net.fabricmc.api.ClientModInitializer;
 import net.fabricmc.api.EnvType;
@@ -21,7 +25,8 @@ import net.fabricmc.fabric.api.client.command.v2.ClientCommandRegistrationCallba
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
 import net.fabricmc.fabric.api.client.keybinding.v1.KeyBindingHelper;
 import net.fabricmc.fabric.api.client.rendering.v1.HudRenderCallback;
-import net.fabricmc.fabric.api.client.rendering.v1.WorldRenderEvents;
+import net.fabricmc.fabric.api.client.rendering.v1.world.WorldRenderEvents;
+import net.minecraft.util.Identifier;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.network.ClientPlayerEntity;
 import net.minecraft.client.option.KeyBinding;
@@ -61,6 +66,10 @@ public class MacroModClient implements ClientModInitializer {
     private static StevebotApi stevebotApi;
     private static SmoothAim smoothAim;
 
+    // ─── Keybinding category ───────────────────────────────────────
+    private static final KeyBinding.Category MACRO_MOD_CATEGORY =
+            KeyBinding.Category.create(Identifier.of("macromod", "general"));
+
     // ─── Keybindings ────────────────────────────────────────────
     private static KeyBinding openGuiKey;
     private static KeyBinding addWaypointKey;
@@ -70,6 +79,10 @@ public class MacroModClient implements ClientModInitializer {
     private static KeyBinding stopMacroKey;
     private static KeyBinding toggleKeybindHudKey;
     private static KeyBinding debugInfoKey;
+    private static KeyBinding toggleAutoFishKey;
+    private static KeyBinding toggleFreelookKey;
+    private static KeyBinding toggleAutoFarmerKey;
+    private static KeyBinding toggleAutoAttackKey;
 
     // ─── Initialization ───────────────────────────────────────────
 
@@ -91,6 +104,9 @@ public class MacroModClient implements ClientModInitializer {
         hudOverlay          = new HudOverlay();
         keybindHudOverlay   = new KeybindHudOverlay();
 
+        // Load freelook FOV from config
+        FreelookManager.getInstance().setFreelookFov(configManager.getConfig().getFreelookFov());
+
         // Register keybindings
         registerKeybindings();
 
@@ -106,7 +122,11 @@ public class MacroModClient implements ClientModInitializer {
 
         // Register 3D path debug renderer
         PathDebugRenderer pathDebugRenderer = new PathDebugRenderer();
-        WorldRenderEvents.AFTER_TRANSLUCENT.register(pathDebugRenderer::onWorldRender);
+        WorldRenderEvents.END_MAIN.register(ctx -> pathDebugRenderer.onWorldRender(ctx));
+
+        // Register ESP renderer (target, entities, blocks)
+        ESPRenderer espRenderer = new ESPRenderer();
+        WorldRenderEvents.END_MAIN.register(ctx -> espRenderer.onWorldRender(ctx));
 
         LOGGER.info("========================================");
         LOGGER.info("Macro Mod initialized successfully.");
@@ -118,56 +138,84 @@ public class MacroModClient implements ClientModInitializer {
                 "key.macromod.open_gui",
                 InputUtil.Type.KEYSYM,
                 GLFW.GLFW_KEY_M,
-                "category.macromod.general"
+                MACRO_MOD_CATEGORY
         ));
 
         addWaypointKey = KeyBindingHelper.registerKeyBinding(new KeyBinding(
                 "key.macromod.add_waypoint",
                 InputUtil.Type.KEYSYM,
                 GLFW.GLFW_KEY_V,
-                "category.macromod.general"
+                MACRO_MOD_CATEGORY
         ));
 
         addTeleportKey = KeyBindingHelper.registerKeyBinding(new KeyBinding(
                 "key.macromod.add_teleport",
                 InputUtil.Type.KEYSYM,
                 GLFW.GLFW_KEY_T,
-                "category.macromod.general"
+                MACRO_MOD_CATEGORY
         ));
 
         addBlockBreakKey = KeyBindingHelper.registerKeyBinding(new KeyBinding(
                 "key.macromod.add_block_break",
                 InputUtil.Type.KEYSYM,
                 GLFW.GLFW_KEY_B,
-                "category.macromod.general"
+                MACRO_MOD_CATEGORY
         ));
 
         toggleRecordingKey = KeyBindingHelper.registerKeyBinding(new KeyBinding(
                 "key.macromod.toggle_recording",
                 InputUtil.Type.KEYSYM,
                 GLFW.GLFW_KEY_R,
-                "category.macromod.general"
+                MACRO_MOD_CATEGORY
         ));
 
         stopMacroKey = KeyBindingHelper.registerKeyBinding(new KeyBinding(
                 "key.macromod.stop_macro",
                 InputUtil.Type.KEYSYM,
                 GLFW.GLFW_KEY_PERIOD,
-                "category.macromod.general"
+                MACRO_MOD_CATEGORY
         ));
 
         toggleKeybindHudKey = KeyBindingHelper.registerKeyBinding(new KeyBinding(
                 "key.macromod.toggle_keybind_hud",
                 InputUtil.Type.KEYSYM,
                 GLFW.GLFW_KEY_H,
-                "category.macromod.general"
+                MACRO_MOD_CATEGORY
         ));
 
         debugInfoKey = KeyBindingHelper.registerKeyBinding(new KeyBinding(
                 "key.macromod.debug_info",
                 InputUtil.Type.KEYSYM,
                 GLFW.GLFW_KEY_I,
-                "category.macromod.general"
+                MACRO_MOD_CATEGORY
+        ));
+
+        toggleAutoFishKey = KeyBindingHelper.registerKeyBinding(new KeyBinding(
+                "key.macromod.toggle_auto_fish",
+                InputUtil.Type.KEYSYM,
+                GLFW.GLFW_KEY_F,
+                MACRO_MOD_CATEGORY
+        ));
+
+        toggleFreelookKey = KeyBindingHelper.registerKeyBinding(new KeyBinding(
+                "key.macromod.toggle_freelook",
+                InputUtil.Type.KEYSYM,
+                GLFW.GLFW_KEY_LEFT_ALT,
+                MACRO_MOD_CATEGORY
+        ));
+
+        toggleAutoFarmerKey = KeyBindingHelper.registerKeyBinding(new KeyBinding(
+                "key.macromod.toggle_auto_farmer",
+                InputUtil.Type.KEYSYM,
+                GLFW.GLFW_KEY_G,
+                MACRO_MOD_CATEGORY
+        ));
+
+        toggleAutoAttackKey = KeyBindingHelper.registerKeyBinding(new KeyBinding(
+                "key.macromod.toggle_auto_attack",
+                InputUtil.Type.KEYSYM,
+                GLFW.GLFW_KEY_K,
+                MACRO_MOD_CATEGORY
         ));
     }
 
@@ -186,6 +234,12 @@ public class MacroModClient implements ClientModInitializer {
 
             // Auto-fishing tick
             com.example.macromod.manager.AutoFishingManager.getInstance().tick();
+
+            // Auto-farmer tick
+            AutoFarmerManager.getInstance().tick();
+
+            // Auto-attack tick
+            AutoAttackManager.getInstance().tick();
 
             // Keybinding checks
             handleKeybindings(client);
@@ -267,6 +321,63 @@ public class MacroModClient implements ClientModInitializer {
         // Debug info - show entity or block data
         while (debugInfoKey.wasPressed()) {
             debugTargetInfo(client);
+        }
+
+        // Toggle auto fishing
+        while (toggleAutoFishKey.wasPressed()) {
+            com.example.macromod.manager.AutoFishingManager afm = 
+                    com.example.macromod.manager.AutoFishingManager.getInstance();
+            boolean newState = !afm.isEnabled();
+            afm.setEnabled(newState);
+            
+            if (client.player != null) {
+                String status = newState ? "enabled" : "disabled";
+                client.player.sendMessage(
+                        Text.literal("Auto Fishing " + status).formatted(newState ? Formatting.GREEN : Formatting.RED),
+                        false
+                );
+            }
+        }
+
+        // Toggle freelook (decouple camera rotation from player body rotation)
+        while (toggleFreelookKey.wasPressed()) {
+            FreelookManager.getInstance().toggle();
+            if (client.player != null) {
+                boolean flEnabled = FreelookManager.getInstance().isEnabled();
+                client.player.sendMessage(
+                        Text.literal("Freelook " + (flEnabled ? "enabled" : "disabled"))
+                                .formatted(flEnabled ? Formatting.AQUA : Formatting.GRAY),
+                        false
+                );
+            }
+        }
+
+        // Toggle auto farmer (zig-zag crop harvesting)
+        while (toggleAutoFarmerKey.wasPressed()) {
+            AutoFarmerManager afmr = AutoFarmerManager.getInstance();
+            afmr.toggle();
+            if (client.player != null) {
+                boolean afEnabled = afmr.isEnabled();
+                client.player.sendMessage(
+                        Text.literal("Auto Farmer " + (afEnabled ? "enabled" : "disabled"))
+                                .formatted(afEnabled ? Formatting.GREEN : Formatting.RED),
+                        false
+                );
+            }
+        }
+
+        // Toggle auto attack (single-target entity lock)
+        while (toggleAutoAttackKey.wasPressed()) {
+            AutoAttackManager aam = AutoAttackManager.getInstance();
+            aam.toggle();
+            if (client.player != null) {
+                boolean aaEnabled = aam.isEnabled();
+                client.player.sendMessage(
+                        Text.literal("Auto Attack " + (aaEnabled ? "enabled" : "disabled"))
+                                .formatted(aaEnabled ? Formatting.GREEN : Formatting.RED),
+                        false
+                );
+            }
         }
     }
 
