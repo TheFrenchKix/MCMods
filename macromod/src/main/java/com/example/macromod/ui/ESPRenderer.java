@@ -14,11 +14,14 @@ import net.minecraft.client.util.math.MatrixStack;
 import com.mojang.blaze3d.pipeline.RenderPipeline;
 import com.mojang.blaze3d.platform.DepthTestFunction;
 import net.minecraft.entity.Entity;
+import net.minecraft.entity.EquipmentSlot;
 import net.minecraft.entity.LivingEntity;
+import net.minecraft.entity.decoration.ArmorStandEntity;
 import net.minecraft.registry.Registries;
 import net.minecraft.util.Identifier;
 import net.minecraft.util.math.BlockPos;
 import net.minecraft.util.math.Box;
+import net.minecraft.util.math.RotationAxis;
 import net.minecraft.util.math.Vec3d;
 import org.joml.Matrix4f;
 
@@ -32,6 +35,8 @@ import java.util.Set;
  * Registered on {@code WorldRenderEvents.END_MAIN} for proper vertex flushing.
  */
 public class ESPRenderer {
+
+    private static final double PLAYER_HEAD_SIZE = 0.55;
 
     /**
      * Lines render layer with NO_DEPTH_TEST — draws through walls.
@@ -93,6 +98,9 @@ public class ESPRenderer {
                 if (entity == client.player) continue;
                 if (!(entity instanceof LivingEntity le)) continue;
                 if (!le.isAlive()) continue;
+                if (le instanceof net.minecraft.entity.player.PlayerEntity) continue;
+                if (le instanceof ArmorStandEntity) continue;
+                if (le.isInvisible()) continue;
                 if (attackTarget != null && entity == attackTarget) continue;
 
                 String entityId = Registries.ENTITY_TYPE.getId(entity.getType()).toString();
@@ -121,6 +129,16 @@ public class ESPRenderer {
             tickCounter = 0;
         }
 
+        // ── 4. Fairy Souls ESP (cyan boxes around likely Fairy Soul stands) ──
+        if (cfg.isFairySoulsEspEnabled()) {
+            for (Entity entity : client.world.getEntities()) {
+                if (entity instanceof ArmorStandEntity ase && isLikelyFairySoulStand(ase)) {
+                    // Render around the actual player_head size and orientation.
+                    drawHeadBoxWithHeading(matrices, vc, ase, tickDelta, 0.0f, 1.0f, 1.0f, 0.8f);
+                }
+            }
+        }
+
         matrices.pop();
     }
 
@@ -136,6 +154,31 @@ public class ESPRenderer {
         float h = entity.getHeight();
         return new Box(eye.x - w, feetY, eye.z - w,
                        eye.x + w, feetY + h, eye.z + w);
+    }
+
+    /**
+     * Draws an oriented head box using player_head size (0.5 blocks) and armor stand heading.
+     */
+    private static void drawHeadBoxWithHeading(MatrixStack matrices,
+                                               VertexConsumer vc,
+                                               ArmorStandEntity ase,
+                                               float tickDelta,
+                                               float r, float g, float b, float a) {
+        Box body = lerpedBox(ase, tickDelta);
+        double centerX = (body.minX + body.maxX) * 0.5;
+        double centerY = body.maxY - (PLAYER_HEAD_SIZE * 0.5);
+        double centerZ = (body.minZ + body.maxZ) * 0.5;
+
+        matrices.push();
+        matrices.translate(centerX, centerY, centerZ);
+        matrices.multiply(RotationAxis.POSITIVE_Y.rotationDegrees(-ase.getYaw()));
+
+        double h = PLAYER_HEAD_SIZE * 0.5;
+        drawBoxOutline(matrices, vc,
+                -h, -h, -h,
+                 h,  h,  h,
+                r, g, b, a);
+        matrices.pop();
     }
 
     /** Scans nearby blocks for whitelisted block IDs. */
@@ -162,6 +205,21 @@ public class ESPRenderer {
                 }
             }
         }
+    }
+
+    /**
+     * Tuned from in-game debug samples:
+     * - should render: invisible, normal-sized, non-marker, no arms, has baseplate, wearing player head
+     * - should not render: visible stands, small stands, marker stands, armed stands, no head item
+     */
+    private static boolean isLikelyFairySoulStand(ArmorStandEntity ase) {
+        if (!ase.isInvisible() || ase.isMarker() || ase.isSmall() || ase.shouldShowArms() || !ase.shouldShowBasePlate()) {
+            return false;
+        }
+        
+        // Must be wearing a player head
+        Identifier headId = Registries.ITEM.getId(ase.getEquippedStack(EquipmentSlot.HEAD).getItem());
+        return headId.toString().equals("minecraft:player_head");
     }
 
     // ── Box outline helper ──────────────────────────────────────────

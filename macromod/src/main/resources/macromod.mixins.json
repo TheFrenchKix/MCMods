@@ -7,7 +7,8 @@
     "ClientPlayerEntityMixin",
     "MouseMixin",
     "CameraUpdateMixin",
-    "GameRendererMixin"
+    "GameRendererMixin",
+    "MinecraftClientAccessor"
   ],
   "injectors": {
     "defaultRequire": 1

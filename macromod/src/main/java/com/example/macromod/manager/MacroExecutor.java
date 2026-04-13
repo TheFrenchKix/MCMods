@@ -1,6 +1,7 @@
 package com.example.macromod.manager;
 
 import com.example.macromod.MacroModClient;
+import com.example.macromod.manager.AutoAttackManager;
 import com.example.macromod.data.blockpos.BaseBlockPos;
 import com.example.macromod.model.*;
 import com.example.macromod.pathfinding.MovementHelper;
@@ -13,12 +14,14 @@ import java.util.HashSet;
 import com.example.macromod.pathfinding.goal.ExactGoal;
 import com.example.macromod.util.BlockUtils;
 import com.example.macromod.util.PlayerUtils;
+import com.example.macromod.util.MouseInputHelper;
 import net.fabricmc.api.EnvType;
 import net.fabricmc.api.Environment;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.network.ClientPlayerEntity;
 import net.minecraft.client.world.ClientWorld;
 import net.minecraft.entity.LivingEntity;
+import net.minecraft.entity.decoration.ArmorStandEntity;
 import net.minecraft.registry.Registries;
 import net.minecraft.text.Text;
 import net.minecraft.util.Formatting;
@@ -35,6 +38,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.List;
 import java.util.Random;
 
@@ -85,6 +89,11 @@ public class MacroExecutor {
     // ─── Mining ─────────────────────────────────────────────────
     private boolean isMiningBlock;
     private long miningDelayEndMs;
+    private boolean aimLocked = false;  // When true, don't re-aim; maintain current crosshair lock
+    /** System time when aimLocked first became true. -1 when not locked. */
+    private long aimLockedAtMs = -1L;
+    /** Milliseconds to wait after crosshair confirms on block before pressing the attack key. */
+    private static final long MINING_CLICK_DWELL_MS = 130L;
     private long lastMineTime;
     private static final Random MINE_RAND = new Random();
 
@@ -93,14 +102,34 @@ public class MacroExecutor {
     private LivingEntity attackTarget = null;
     private long attackChaseStartMs = -1L;
     private static final long ATTACK_CHASE_TIMEOUT_MS = 4000L;
-    // Random aim within bounding box (anti-cheat)
     private static final Random ATTACK_RAND = new Random();
     private Vec3d attackAimPoint = null;
     private long attackAimRefreshMs = 0L;
     private long attackAimRefreshInterval = 700L;
+    // Same-approach constants as AutoAttackManager
+    private static final float ATTACK_COOLDOWN_THRESHOLD = 0.9f;
+    private static final long  MACRO_ATTACK_DWELL_MS     = 150L;
+    private static final int   MACRO_MIN_LOCK_TICKS      = 10;
+    private static final int   MACRO_MAX_NO_LOS_TICKS    = 3;
+    private static final float ATTACK_RELEASE_BUFFER     = 1.5f;
+    /** Macro melee reach distance in blocks (matching AutoFishing close mode). */
+    private static final float MACRO_MELEE_REACH         = 2.5f;
+    /** Distance at which to start spam-clicking to build attack animation. */
+    private static final float MACRO_SPAM_CLICK_DISTANCE = 4.0f;
+    private long attackFirstOnTargetMs = -1L;
+    private long lastSpamClickMs = -1L;
+    private int  attackLockTicks  = 0;
+    private int  attackNoLosTicks = 0;
+    // ─── Attack chase stuck detection ───────────────────────────
+    private Vec3d attackChaseLastPos  = null;
+    private long  attackChaseStuckMs  = -1L;
+    private boolean attackChaseJumped = false;
 
     // ─── Entity elimination mode (attackDanger) ─────────────────
     private boolean isEliminatingEnemies = false;
+
+    // ─── Pause for standalone AutoAttackManager ────────────────────
+    private boolean pausedForAutoAttack = false;
 
     // ─── Mining LOS strafe ──────────────────────────────────────
     /** Block we are currently strafing to gain line-of-sight on. */
@@ -254,8 +283,17 @@ public class MacroExecutor {
 
         movementHelper.releaseAllInputs();
         isMiningBlock = false;
+        aimLocked = false;
+        aimLockedAtMs = -1L;
+        pausedForAutoAttack = false;
         attackTarget = null;
         attackChaseStartMs = -1L;
+        attackLockTicks = 0;
+        attackNoLosTicks = 0;
+        attackFirstOnTargetMs = -1L;
+        attackChaseLastPos = null;
+        attackChaseStuckMs = -1L;
+        attackChaseJumped = false;
         isLineFarming = false;
 
         // Print stats if we ran for a while
@@ -284,6 +322,17 @@ public class MacroExecutor {
         state = MacroState.PAUSED;
         movementHelper.releaseAllInputs();
         isMiningBlock = false;
+        aimLocked = false;
+        aimLockedAtMs = -1L;
+        pausedForAutoAttack = false;
+        attackTarget = null;
+        attackChaseStartMs = -1L;
+        attackLockTicks = 0;
+        attackNoLosTicks = 0;
+        attackFirstOnTargetMs = -1L;
+        attackChaseLastPos = null;
+        attackChaseStuckMs = -1L;
+        attackChaseJumped = false;
         sendMessage("macromod.chat.macro_paused", Formatting.YELLOW);
     }
 
@@ -324,6 +373,40 @@ public class MacroExecutor {
             totalDistance += new Vec3d(player.getX(), player.getY(), player.getZ()).distanceTo(lastDistCheckPos);
         }
         lastDistCheckPos = new Vec3d(player.getX(), player.getY(), player.getZ());
+
+        // ───────────────────────────────────────────────────────────────
+        // Pause macro movement whenever the standalone AutoAttackManager (K key)
+        // has an active target. Resume with fresh pathfinding when target clears.
+        // ───────────────────────────────────────────────────────────────
+        AutoAttackManager aam = AutoAttackManager.getInstance();
+        boolean aamHasTarget = aam != null && aam.isEnabled() && aam.getCurrentTarget() != null;
+        if (aamHasTarget && !pausedForAutoAttack) {
+            // Just acquired a target — freeze all macro movement
+            pausedForAutoAttack = true;
+            movementHelper.releaseAllInputs();
+            aimLocked = false;
+            aimLockedAtMs = -1L;
+            isMiningBlock = false;
+            if (client.options != null) client.options.attackKey.setPressed(false);
+            LOGGER.info("[MacroExecutor] Paused for AutoAttack target");
+        }
+        if (!aamHasTarget && pausedForAutoAttack) {
+            // Target cleared — resume macro with fresh pathfinding
+            pausedForAutoAttack = false;
+            if (state == MacroState.MOVING || state == MacroState.PATHFINDING
+                    || state == MacroState.MINING || state == MacroState.NEXT_STEP) {
+                currentPath = null;
+                currentPathIndex = 0;
+                moveStartMs = System.currentTimeMillis();
+                stuckSince  = -1L;
+                lastPosition = new Vec3d(player.getX(), player.getY(), player.getZ());
+                state = MacroState.PATHFINDING;
+                LOGGER.info("[MacroExecutor] Resumed after AutoAttack, re-pathfinding");
+            }
+        }
+        if (pausedForAutoAttack) {
+            return; // Suspend state machine while entity is being attacked
+        }
 
         // Entity attack system with attackDanger mode
         boolean isDuringMacro = state != MacroState.IDLE && state != MacroState.COMPLETED && state != MacroState.ERROR;
@@ -866,9 +949,11 @@ public class MacroExecutor {
             return;
         }
 
-        // Aim at the visible face center
+        // Aim at the visible face center (unless aim is already locked on target)
         Vec3d blockCenter = visibleFaceCentre(eyePos, blockPos, player.getBlockPos().getY(), world);
-        movementHelper.lookAt(player, blockCenter, 0.10f);
+        if (!aimLocked) {
+            movementHelper.lookAt(player, blockCenter, 0.10f);
+        }
 
         // Check if block is actually visible (not obstructed by other blocks)
         boolean canSee = BlockUtils.hasLineOfSight(world, eyePos, blockPos);
@@ -940,7 +1025,7 @@ public class MacroExecutor {
 
         // Wait until aligned if not locked
         if (!currentMacro.getConfig().isLockCrosshair()) {
-            if (!movementHelper.isLookingAt(player, blockCenter, 10.0f)) {
+            if (!movementHelper.isLookingAt(player, blockCenter, 6.0f)) {
                 if (client.options != null) client.options.attackKey.setPressed(false);
                 return;
             }
@@ -950,6 +1035,8 @@ public class MacroExecutor {
         HitResult crosshair = client.crosshairTarget;
         if (!(crosshair instanceof BlockHitResult bhr) || !bhr.getBlockPos().equals(blockPos)) {
             if (client.options != null) client.options.attackKey.setPressed(false);
+            aimLocked = false;  // Crosshair lost — unlock aim to re-adjust
+            aimLockedAtMs = -1L;
             long now2 = System.currentTimeMillis();
             if (now2 - lastDebugMs > DEBUG_INTERVAL_MS) {
                 lastDebugMs = now2;
@@ -959,9 +1046,16 @@ public class MacroExecutor {
             }
             return;
         }
+        // Lock aim now that crosshair is confirmed on target block
+        if (!aimLocked) {
+            aimLocked = true;
+            aimLockedAtMs = System.currentTimeMillis(); // record first lock time for dwell
+        }
 
-        // Hold attack key to mine
-        if (client.options != null) client.options.attackKey.setPressed(true);
+        // Mine through the normal left-click path once dwell has elapsed.
+        boolean dwellPassed = aimLockedAtMs >= 0
+                && System.currentTimeMillis() - aimLockedAtMs >= MINING_CLICK_DWELL_MS;
+        if (dwellPassed) MouseInputHelper.continueLeftClick(client);
         if (!isMiningBlock) {
             isMiningBlock = true;
             lastMineTime = System.currentTimeMillis();
@@ -973,6 +1067,8 @@ public class MacroExecutor {
             target.setMined(true);
             blocksMinedTotal++;
             isMiningBlock = false;
+            aimLocked = false;  // Unlock aim for next block
+            aimLockedAtMs = -1L;
             miningDelayEndMs = System.currentTimeMillis() + HumanReactionTime.getMiningReactionTime(currentMacro.getConfig().getMiningDelay());
             rescanAroundBlock(blockPos, world, step);
             currentBlockTargetIndex++;
@@ -987,133 +1083,177 @@ public class MacroExecutor {
             blocksSkippedTotal++;
             currentBlockTargetIndex++;
             isMiningBlock = false;
+            aimLocked = false;  // Unlock aim on timeout
+            aimLockedAtMs = -1L;
         }
     }
 
     /**
-     * Scans nearby entities and attacks/chases the nearest valid target.
-     * Only chases (overrides movement) while in MINING state to avoid disrupting pathfinding.
+     * Attacks the nearest valid entity using the same approach as {@link AutoAttackManager}:
+     * SmoothAim for rotation, cooldown-progress gating, CPS limit, dwell timer,
+     * LOS-required targeting, stuck detection (jump then skip), and lock-tick guards.
      */
     private void tickAttack(ClientPlayerEntity player, ClientWorld world, MinecraftClient client) {
         MacroConfig cfg = currentMacro.getConfig();
         float range = cfg.getAttackRange();
-        boolean isDuringMacro = state != MacroState.IDLE && state != MacroState.COMPLETED && state != MacroState.ERROR;
-        boolean shouldAttackDuringRoute = cfg.isAttackDanger() && isDuringMacro;
 
-        // Release target only when dead — no range-based release to avoid jitter from target switching
-        if (attackTarget != null && (attackTarget.isDead() || attackTarget.getHealth() <= 0)) {
-            attackTarget = null;
-            attackChaseStartMs = -1L;
-        }
-        // Release if chase timeout exceeded (entity escaped / unreachable)
-        if (attackTarget != null && attackChaseStartMs > 0
-                && System.currentTimeMillis() - attackChaseStartMs > ATTACK_CHASE_TIMEOUT_MS) {
-            attackTarget = null;
-            attackChaseStartMs = -1L;
+        // ── 1. Release stale / dead targets ────────────────────────────────────
+        if (attackTarget != null) {
+            if (attackTarget.isDead() || attackTarget.getHealth() <= 0) {
+                clearAttackTarget(client);
+                return;
+            }
+            // After minimum lock period, check range and LOS
+            if (attackLockTicks >= MACRO_MIN_LOCK_TICKS) {
+                double threshold = range + ATTACK_RELEASE_BUFFER;
+                if (player.squaredDistanceTo(attackTarget) > threshold * threshold) {
+                    clearAttackTarget(client);
+                    return;
+                }
+                if (!attackHasLOS(client, player, attackTarget)) {
+                    if (++attackNoLosTicks >= MACRO_MAX_NO_LOS_TICKS) {
+                        LOGGER.info("[MacroExecutor] tickAttack: lost LOS on {}, finding new target",
+                            attackTarget.getName().getString());
+                        clearAttackTarget(client);
+                        return;
+                    }
+                } else {
+                    attackNoLosTicks = 0;
+                }
+            }
         }
 
-        // Find new target if needed
+        // ── 2. Find new target — requires LOS ────────────────────────────────────
         if (attackTarget == null) {
             Box box = player.getBoundingBox().expand(range);
             List<LivingEntity> candidates = world.getEntitiesByClass(
                     LivingEntity.class, box, e -> {
                         if (e == player || e.isDead() || e.getHealth() <= 0) return false;
+                        if (!attackHasLOS(client, player, e)) return false; // ignore hidden entities
+                        // Always filter out irrelevant entity types
+                        if (e instanceof net.minecraft.entity.player.PlayerEntity) return false;
+                        if (e instanceof ArmorStandEntity) return false;
+                        if (e.isInvisible()) return false;
+                        // If whitelist mode, only include whitelisted types
                         if (cfg.isAttackWhitelistOnly()) {
                             String id = Registries.ENTITY_TYPE.getId(e.getType()).toString();
                             return cfg.getAttackWhitelist().contains(id);
                         }
-                        // "All" mode: attack any mob but not other players
-                        return !(e instanceof net.minecraft.entity.player.PlayerEntity);
-                    }
-            );
+                        return true;
+                    });
             if (candidates.isEmpty()) return;
 
-            LivingEntity nearest = null;
-            double nearestDist = Double.MAX_VALUE;
-            for (LivingEntity e : candidates) {
-                double d = player.squaredDistanceTo(e);
-                if (d < nearestDist) { nearestDist = d; nearest = e; }
-            }
-            attackTarget = nearest;
-            if (attackTarget != null) {
-                attackChaseStartMs = System.currentTimeMillis();
-                attackAimPoint = randomPointInBox(attackTarget.getBoundingBox());
-                attackAimRefreshInterval = HumanReactionTime.getAttackIntervalWithJitter(600, 50);
-                attackAimRefreshMs = System.currentTimeMillis();
-                
-                // Cancel path when starting attack to avoid camera jitter between pathfinding and entity position
-                PathHandler pathHandler = MacroModClient.getPathHandler();
-                if (pathHandler != null) {
-                    pathHandler.cancelPath();
+            attackTarget = candidates.stream()
+                    .min(Comparator.comparingDouble(e -> e.squaredDistanceTo(player)))
+                    .orElse(null);
+            if (attackTarget == null) return;
+
+            attackChaseStartMs    = System.currentTimeMillis();
+            attackLockTicks       = 0;
+            attackNoLosTicks      = 0;
+            attackFirstOnTargetMs = -1L;
+            attackChaseLastPos    = null;
+            attackChaseStuckMs    = -1L;
+            attackChaseJumped     = false;
+            PathHandler pathHandler = MacroModClient.getPathHandler();
+            if (pathHandler != null) pathHandler.cancelPath();
+        }
+
+        attackLockTicks++;
+
+        // ── 3. Smooth aim via shared SmoothAim ───────────────────────────────
+        var sa = MacroModClient.getSmoothAim();
+        if (sa != null) sa.setTarget(bodyCenter(attackTarget));
+
+        // ── 4. Movement + stuck detection ────────────────────────────────────
+        // Use fixed melee reach distance of 2.5 blocks for consistency with AutoFishing
+        double distSq   = player.squaredDistanceTo(attackTarget);
+        double meleeSq  = MACRO_MELEE_REACH * MACRO_MELEE_REACH;
+
+        if (distSq > meleeSq) {
+            if (client.options != null) client.options.forwardKey.setPressed(true);
+
+            // Stuck detection — track lateral movement progress
+            Vec3d curPos = new Vec3d(player.getX(), player.getY(), player.getZ());
+            if (attackChaseLastPos == null) {
+                attackChaseLastPos = curPos;
+            } else {
+                double moved = Math.sqrt(
+                    Math.pow(curPos.x - attackChaseLastPos.x, 2) +
+                    Math.pow(curPos.z - attackChaseLastPos.z, 2));
+                if (moved > 0.15) {
+                    // Making progress — reset stuck state
+                    attackChaseLastPos = curPos;
+                    attackChaseStuckMs = -1L;
+                    if (attackChaseJumped && client.options != null) {
+                        client.options.jumpKey.setPressed(false);
+                        attackChaseJumped = false;
+                    }
+                } else {
+                    // Not moving
+                    if (attackChaseStuckMs < 0) attackChaseStuckMs = System.currentTimeMillis();
+                    long stuckMs = System.currentTimeMillis() - attackChaseStuckMs;
+
+                    if (stuckMs >= 3000) {
+                        // Still stuck after a jump — skip this entity and try next
+                        LOGGER.info("[MacroExecutor] tickAttack: stuck for 3s chasing {}, skipping",
+                            attackTarget.getName().getString());
+                        clearAttackTarget(client);
+                        return;
+                    } else if (stuckMs >= 1500 && !attackChaseJumped) {
+                        // Try jumping once to get unstuck
+                        LOGGER.info("[MacroExecutor] tickAttack: stuck 1.5s, trying jump");
+                        if (client.options != null) client.options.jumpKey.setPressed(true);
+                        attackChaseJumped = true;
+                    }
                 }
             }
-        }
-
-        if (attackTarget == null) return;
-
-        // Periodically re-randomize the aim point within the bounding box
-        long now = System.currentTimeMillis();
-        if (attackAimPoint == null || now - attackAimRefreshMs > attackAimRefreshInterval) {
-            attackAimPoint = randomPointInBox(attackTarget.getBoundingBox());
-            attackAimRefreshInterval = HumanReactionTime.getAttackIntervalWithJitter(600, 50);
-            attackAimRefreshMs = now;
-        }
-
-        // Smooth aim to target with 1.0f sensitivity (visible aiming)
-        movementHelper.lookAt(player, attackAimPoint, 1.0f);
-
-        double dist = Math.sqrt(player.squaredDistanceTo(attackTarget));
-        double reach = player.getEntityInteractionRange();
-        double horizontalDist = Math.sqrt(
-            Math.pow(player.getX() - attackTarget.getX(), 2) +
-            Math.pow(player.getZ() - attackTarget.getZ(), 2)
-        );
-        double verticalDist = attackTarget.getY() - player.getY();
-        
-        // Calculate attack cooldown from CPS (1000ms / CPS)
-        long attackCooldownMs = 1000L / Math.max(1, cfg.getAttackCPS());
-
-        if (dist <= reach) {
-            // Stop all movement — stand still to attack
+        } else {
+            // Within melee reach — stop moving and reset stuck state
+            attackChaseStuckMs = -1L;
+            attackChaseLastPos = null;
             if (client.options != null) {
                 client.options.forwardKey.setPressed(false);
                 client.options.backKey.setPressed(false);
                 client.options.leftKey.setPressed(false);
                 client.options.rightKey.setPressed(false);
-                client.options.attackKey.setPressed(false);
-                client.options.jumpKey.setPressed(false);
-            }
-            // Attack when cooldown is up and roughly aligned
-            if (now - lastAttackMs >= attackCooldownMs
-                    && movementHelper.isLookingAt(player, attackAimPoint, 35.0f)
-                    && client.interactionManager != null) {
-                client.interactionManager.attackEntity(player, attackTarget);
-                player.swingHand(Hand.MAIN_HAND);
-                lastAttackMs = now;
-                attackAimPoint = randomPointInBox(attackTarget.getBoundingBox());
-                attackAimRefreshMs = now;
-            }
-        } else if (cfg.isAttackEnabled() || shouldAttackDuringRoute) {
-            if (client.options != null) client.options.attackKey.setPressed(false);
-            
-            // Check if entity is on a higher block and within jumping reach
-            boolean canJumpToReach = horizontalDist <= reach + 1.0 && verticalDist > 0 && verticalDist <= 1.5;
-            
-            if (canJumpToReach) {
-                // Enable jump to reach elevated entity
-                if (client.options != null) {
-                    client.options.jumpKey.setPressed(true);
-                    // Move forward/toward entity to complete the jump
-                    BlockPos chasePos = getInterceptPositionAwayFromEntity(player, attackTarget, 1.0);
-                    movementHelper.moveTowards(player, chasePos);
+                if (attackChaseJumped) {
+                    client.options.jumpKey.setPressed(false);
+                    attackChaseJumped = false;
                 }
+            }
+
+            // ── 5. Attack when aimed + cooldown ready + dwell elapsed + CPS ────
+                // Only require angle check (6 degrees), don't require entity in exact crosshair center
+            boolean lookingAtTarget = sa != null && sa.isOnTarget(player, 6f);
+            long now = System.currentTimeMillis();
+            long cpsIntervalMs      = 1000L / Math.max(1, cfg.getAttackCPS());
+            boolean cpsReady        = now - lastAttackMs >= cpsIntervalMs;
+            
+            // Spam-click at 3.5 blocks range
+            double spamDistSq = MACRO_SPAM_CLICK_DISTANCE * MACRO_SPAM_CLICK_DISTANCE;
+            if (distSq <= spamDistSq) {
+                if (lastSpamClickMs < 0 || now - lastSpamClickMs >= cpsIntervalMs) {
+                    float cooldown = player.getAttackCooldownProgress(0f);
+                    if (cooldown >= ATTACK_COOLDOWN_THRESHOLD && client.interactionManager != null) {
+                        MouseInputHelper.leftClick(client);
+                        lastSpamClickMs = now;
+                    }
+                }
+            }
+
+            if (lookingAtTarget) {
+                if (attackFirstOnTargetMs < 0) attackFirstOnTargetMs = System.currentTimeMillis();
             } else {
-                // Chase during attack mode or during macro with attackDanger enabled
-                // Move towards a position 3 blocks away from the entity instead of the entity itself
-                BlockPos chasePos = getInterceptPositionAwayFromEntity(player, attackTarget, 3.0);
-                movementHelper.moveTowards(player, chasePos);
-                // Jump over 1-block obstacles (walls, terrain changes) while chasing
-                movementHelper.handleJump(player, chasePos);
+                attackFirstOnTargetMs = -1L;
+            }
+            boolean dwellReady = attackFirstOnTargetMs >= 0
+                    && System.currentTimeMillis() - attackFirstOnTargetMs >= MACRO_ATTACK_DWELL_MS;
+
+            if (lookingAtTarget && dwellReady && cpsReady && client.interactionManager != null) {
+                MouseInputHelper.leftClick(client);
+                lastAttackMs = System.currentTimeMillis();
+                attackFirstOnTargetMs = -1L; // reset dwell after each click
             }
         }
     }
@@ -1136,9 +1276,6 @@ public class MacroExecutor {
         if (lineFarmCrosshairPos != null) {
             movementHelper.lookAt(player, lineFarmCrosshairPos, 0.1f);
         }
-
-        // Hold left click continuously
-        mc.options.attackKey.setPressed(true);
 
         Vec3d playerPos = new Vec3d(player.getX(), player.getY(), player.getZ());
         float playerYaw = player.getYaw();
@@ -1187,9 +1324,8 @@ public class MacroExecutor {
         // Optionally add attack cooldown
         long now = System.currentTimeMillis();
         long attackCooldown = 100; // 10 clicks per second (more like mining speed)
-        if (now - lastAttackMs < attackCooldown) {
-            mc.options.attackKey.setPressed(false);
-        } else {
+        if (now - lastAttackMs >= attackCooldown) {
+            MouseInputHelper.continueLeftClick(mc);
             lastAttackMs = now;
         }
     }
@@ -1290,12 +1426,15 @@ public class MacroExecutor {
         List<LivingEntity> candidates = world.getEntitiesByClass(
             LivingEntity.class, box, e -> {
                 if (e == player || e.isDead() || e.getHealth() <= 0) return false;
+                // Always filter out irrelevant entity types
+                if (e instanceof net.minecraft.entity.player.PlayerEntity) return false;
+                if (e instanceof ArmorStandEntity) return false;
+                if (e.isInvisible()) return false;
                 if (cfg.isAttackWhitelistOnly()) {
                     String id = Registries.ENTITY_TYPE.getId(e.getType()).toString();
                     return cfg.getAttackWhitelist().contains(id);
                 }
-                // "All" mode: attack any mob but not other players
-                return !(e instanceof net.minecraft.entity.player.PlayerEntity);
+                return true;
             }
         );
         return !candidates.isEmpty();
@@ -1316,6 +1455,8 @@ public class MacroExecutor {
     private void advanceToNextStep() {
         currentStepIndex++;
         radiusScanDone = false;
+        aimLocked = false;  // Unlock aim for next step
+        aimLockedAtMs = -1L;
 
         if (currentStepIndex >= currentMacro.getSteps().size()) {
             if (currentMacro.getConfig().isLoop()) {
@@ -1333,6 +1474,8 @@ public class MacroExecutor {
         } else {
             currentBlockTargetIndex = 0;
             isMiningBlock = false;
+            aimLocked = false;  // Unlock aim for new step
+            aimLockedAtMs = -1L;
             state = MacroState.PATHFINDING;
         }
     }
@@ -1460,6 +1603,41 @@ public class MacroExecutor {
         return new Vec3d(x, y, z);
     }
 
+    /** Releases the active attack target and resets all associated state. */
+    private void clearAttackTarget(MinecraftClient client) {
+        attackTarget          = null;
+        attackChaseStartMs    = -1L;
+        attackLockTicks       = 0;
+        attackNoLosTicks      = 0;
+        attackFirstOnTargetMs = -1L;
+        attackChaseLastPos    = null;
+        attackChaseStuckMs    = -1L;
+        attackChaseJumped     = false;
+        if (client != null && client.options != null) {
+            client.options.forwardKey.setPressed(false);
+            client.options.jumpKey.setPressed(false);
+            client.options.attackKey.setPressed(false);
+        }
+    }
+
+    /** True if there is an unobstructed line-of-sight from the player's eyes to the entity's body center. */
+    private boolean attackHasLOS(MinecraftClient client, ClientPlayerEntity player, LivingEntity target) {
+        if (client.world == null) return false;
+        Vec3d eyes   = player.getEyePos();
+        Vec3d centre = bodyCenter(target);
+        net.minecraft.world.RaycastContext ctx = new net.minecraft.world.RaycastContext(
+                eyes, centre,
+                net.minecraft.world.RaycastContext.ShapeType.COLLIDER,
+                net.minecraft.world.RaycastContext.FluidHandling.NONE,
+                (net.minecraft.entity.Entity) player);
+        return client.world.raycast(ctx).getType() == HitResult.Type.MISS;
+    }
+
+    /** The entity's body center — midpoint between feet and head. */
+    private static Vec3d bodyCenter(LivingEntity e) {
+        return new Vec3d(e.getX(), e.getY() + e.getHeight() * 0.5, e.getZ());
+    }
+
     private void sendMessage(String key, Formatting color, Object... args) {
         MinecraftClient client = MinecraftClient.getInstance();
         if (client.player != null) {
@@ -1579,7 +1757,12 @@ public class MacroExecutor {
         return world.getEntitiesByClass(
             LivingEntity.class,
             searchBox,
-            entity -> entity != player && !entity.isDead() && entity.getHealth() > 0
+            entity -> entity != player 
+                    && !entity.isDead() 
+                    && entity.getHealth() > 0
+                    && !(entity instanceof net.minecraft.entity.player.PlayerEntity)
+                    && !(entity instanceof ArmorStandEntity)
+                    && !entity.isInvisible()
         );
     }
 

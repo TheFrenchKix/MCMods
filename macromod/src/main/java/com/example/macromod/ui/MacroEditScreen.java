@@ -49,7 +49,9 @@ public class MacroEditScreen extends BasePopupScreen {
     // ── Layout constants ──────────────────────────────────────────────
     private static final int HH = 36, FH = 40, R = 8, RB = 5;
     private static final int ROW_GAP = 4;
-    private static final int EL_ROW_H = 20;   // entity whitelist row height
+    private static final int EL_ROW_H = 16;   // entity whitelist row height (tight, no gap)
+    /** Max visible rows before entity list gets its own scrollbar. */
+    private static final int EL_MAX_VISIBLE = 5;
 
     // Computed each init()
     private int px, py, pw, ph, lw;
@@ -90,6 +92,8 @@ public class MacroEditScreen extends BasePopupScreen {
     /** Entity whitelist: list shown this frame + their rendered Y start. */
     private final List<String> elShown = new ArrayList<>();
     private int elX, elRowY0, elW;
+    /** Scroll offset for the entity whitelist sub-list (rows). */
+    private int elScroll = 0;
 
     // ── Hover states ─────────────────────────────────────────────────
     private boolean hoverSave, hoverCancel;
@@ -349,21 +353,41 @@ public class MacroEditScreen extends BasePopupScreen {
         elX = x; elW = listW; elRowY0 = y;
         elShown.clear();
         elShown.addAll(nearbyTypes);
-        for (int i = 0; i < elShown.size(); i++) {
-            String id  = elShown.get(i);
-            int ey     = y + i * EL_ROW_H;
+
+        int totalItems  = elShown.size();
+        int visibleRows = Math.min(totalItems, EL_MAX_VISIBLE);
+        int listH       = visibleRows * EL_ROW_H;
+        int maxScroll   = Math.max(0, totalItems - EL_MAX_VISIBLE);
+        elScroll = Math.max(0, Math.min(elScroll, maxScroll));
+
+        boolean needScroll = totalItems > EL_MAX_VISIBLE;
+        int sbW    = needScroll ? 4 : 0;
+        int innerW = listW - (needScroll ? sbW + 2 : 0);
+
+        for (int i = 0; i < totalItems; i++) {
+            String id = elShown.get(i);
+            int ey    = y + (i - elScroll) * EL_ROW_H;
+            if (ey + EL_ROW_H <= y || ey >= y + listH) continue;
             boolean wl = editAttackWl.contains(id);
-            boolean hv = hit(mx, my, x, ey, listW, EL_ROW_H - 2);
-            RoundedRectRenderer.draw(ctx, x, ey, listW, EL_ROW_H - 2, RB,
+            boolean hv = hit(mx, my, x, ey, innerW, EL_ROW_H);
+            RoundedRectRenderer.draw(ctx, x, ey, innerW, EL_ROW_H, RB,
                     wl ? 0xFF1A2B44 : (hv ? EasyBlockGui.C_NAV_ACT : EasyBlockGui.C_CARD));
-            if (wl) ctx.fill(x, ey + 4, x + 3, ey + EL_ROW_H - 6, EasyBlockGui.C_ACCENT);
+            if (wl) ctx.fill(x, ey + 3, x + 3, ey + EL_ROW_H - 3, EasyBlockGui.C_ACCENT);
             String disp = id.contains(":") ? id.substring(id.indexOf(':') + 1) : id;
             disp = Character.toUpperCase(disp.charAt(0)) + disp.substring(1).replace('_', ' ');
-            ctx.drawTextWithShadow(textRenderer, Text.literal(disp), x + 8, ey + 6,
+            ctx.drawTextWithShadow(textRenderer, Text.literal(disp), x + 8, ey + (EL_ROW_H - 8) / 2,
                     wl ? EasyBlockGui.C_TEXT : EasyBlockGui.C_TEXT2);
-            y += EL_ROW_H;
         }
-        return y + 4;
+
+        if (needScroll && listH > 0 && maxScroll > 0) {
+            int sbX    = x + innerW + 2;
+            int thumbH = Math.max(8, listH * visibleRows / totalItems);
+            int thumbY = y + (int)((long) elScroll * (listH - thumbH) / maxScroll);
+            ctx.fill(sbX, y, sbX + sbW, y + listH, EasyBlockGui.C_DIVIDER);
+            ctx.fill(sbX, thumbY, sbX + sbW, thumbY + thumbH, EasyBlockGui.C_ACCENT);
+        }
+
+        return y + listH + 4;
     }
 
     // ─── Nearby entity types ──────────────────────────────────────────
@@ -521,9 +545,12 @@ public class MacroEditScreen extends BasePopupScreen {
         // Entity whitelist rows (only if in left panel scrollable area)
         if (editAttackEnabled && editAttackWlOnly && !elShown.isEmpty()
                 && imx >= elX && imx < elX + elW) {
+            int visRows = Math.min(elShown.size(), EL_MAX_VISIBLE);
+            int listH   = visRows * EL_ROW_H;
             for (int i = 0; i < elShown.size(); i++) {
-                int ey = elRowY0 + i * EL_ROW_H;
-                if (imy >= ey && imy < ey + EL_ROW_H - 2) {
+                int ey = elRowY0 + (i - elScroll) * EL_ROW_H;
+                if (ey < elRowY0 || ey >= elRowY0 + listH) continue;
+                if (imy >= ey && imy < ey + EL_ROW_H) {
                     String id = elShown.get(i);
                     if (editAttackWl.contains(id)) editAttackWl.remove(id);
                     else editAttackWl.add(id);
@@ -568,9 +595,19 @@ public class MacroEditScreen extends BasePopupScreen {
 
     @Override
     public boolean mouseScrolled(double mx, double my, double hAmt, double vAmt) {
-        if ((int) mx < px + lw) {
-            // Left panel scroll
-            leftScroll = Math.max(0, Math.min(leftScrollMax, leftScroll - (int)(vAmt * 14)));
+        int imx = (int) mx; int imy = (int) my;
+        if (imx < px + lw) {
+            // Check if hovering the entity list sub-scroll area
+            int listH = Math.min(elShown.size(), EL_MAX_VISIBLE) * EL_ROW_H;
+            if (elShown.size() > EL_MAX_VISIBLE
+                    && imx >= elX && imx < elX + elW
+                    && imy >= elRowY0 && imy < elRowY0 + listH) {
+                int maxScroll = elShown.size() - EL_MAX_VISIBLE;
+                elScroll = Math.max(0, Math.min(maxScroll, elScroll - (int) vAmt));
+            } else {
+                // Left panel scroll
+                leftScroll = Math.max(0, Math.min(leftScrollMax, leftScroll - (int)(vAmt * 14)));
+            }
         } else {
             // Right panel: step list scroll
             int maxStep = Math.max(0, macro.getSteps().size() - 5);

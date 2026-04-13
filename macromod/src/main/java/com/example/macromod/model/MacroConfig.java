@@ -57,7 +57,7 @@ public class MacroConfig {
     public MacroConfig() {
         this.loop = false;
         this.skipMismatch = true;
-        this.attackDanger = true;
+        this.attackDanger = false;
         this.miningDelay = 50;
         this.moveTimeout = 10000;
         this.arrivalRadius = 0.5f;

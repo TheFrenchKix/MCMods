@@ -34,6 +34,10 @@ import net.minecraft.client.util.InputUtil;
 import net.minecraft.client.world.ClientWorld;
 import net.minecraft.block.BlockState;
 import net.minecraft.entity.LivingEntity;
+import net.minecraft.entity.EquipmentSlot;
+import net.minecraft.item.ItemStack;
+import net.minecraft.nbt.NbtCompound;
+import net.minecraft.nbt.NbtList;
 import net.minecraft.registry.Registries;
 import net.minecraft.text.Text;
 import net.minecraft.util.Formatting;
@@ -45,6 +49,8 @@ import net.minecraft.world.BlockView;
 import org.lwjgl.glfw.GLFW;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
+import java.util.Optional;
 
 /**
  * Client-side mod initializer. Registers keybindings, events, commands, and HUD.
@@ -98,6 +104,15 @@ public class MacroModClient implements ClientModInitializer {
         macroManager.loadAll();
 
         smoothAim           = new SmoothAim();
+
+        // Apply saved Smooth Aim tuning from config
+        com.example.macromod.config.ModConfig smoothCfg = configManager.getConfig();
+        smoothAim.setBaseLerp(smoothCfg.getSmoothAimBaseLerp());
+        smoothAim.setSpeedAtZero(smoothCfg.getSmoothAimSpeedZero());
+        smoothAim.setSpeedAtSlow(smoothCfg.getSmoothAimSpeedSlow());
+        smoothAim.setSpeedAtFast(smoothCfg.getSmoothAimSpeedFast());
+        smoothAim.setSlowZoneDeg(smoothCfg.getSmoothAimSlowZone());
+        smoothAim.setFastZoneDeg(smoothCfg.getSmoothAimFastZone());
 
         macroExecutor       = new MacroExecutor(smoothAim);
         macroRecorder       = new MacroRecorder();
@@ -344,11 +359,6 @@ public class MacroModClient implements ClientModInitializer {
             FreelookManager.getInstance().toggle();
             if (client.player != null) {
                 boolean flEnabled = FreelookManager.getInstance().isEnabled();
-                client.player.sendMessage(
-                        Text.literal("Freelook " + (flEnabled ? "enabled" : "disabled"))
-                                .formatted(flEnabled ? Formatting.AQUA : Formatting.GRAY),
-                        false
-                );
             }
         }
 
@@ -398,14 +408,38 @@ public class MacroModClient implements ClientModInitializer {
             // Entity info
             EntityHitResult entityHit = (EntityHitResult) hitResult;
             net.minecraft.entity.Entity entity = entityHit.getEntity();
-            
+            String extra = "";
+            if (entity instanceof net.minecraft.entity.decoration.ArmorStandEntity ase) {
+                String customName = ase.getCustomName() == null ? "null" : ase.getCustomName().getString();
+                ItemStack headStack = ase.getEquippedStack(EquipmentSlot.HEAD);
+                String headItem = Registries.ITEM.getId(headStack.getItem()).toString();
+                String skullOwner = extractSkullOwnerInfo(headStack);
+                extra = String.format(
+                    " | ArmorStand[inv=%s, marker=%s, small=%s, noGravity=%s, nameVisible=%s, customName=%s, arms=%s, basePlate=%s, headItem=%s, owner=%s, width=%.3f, height=%.3f]",
+                    ase.isInvisible(),
+                    ase.isMarker(),
+                    ase.isSmall(),
+                    ase.hasNoGravity(),
+                    ase.isCustomNameVisible(),
+                    customName,
+                    ase.shouldShowArms(),
+                    ase.shouldShowBasePlate(),
+                    headItem,
+                    skullOwner,
+                    ase.getWidth(),
+                    ase.getHeight()
+                );
+            }
+
             String info = String.format(
-                "ENTITY: %s | Pos: (%.1f, %.1f, %.1f) | Health: %.1f | Vel: (%.2f, %.2f, %.2f) | UUID: %s",
+                "ENTITY: %s | Pos: (%.1f, %.1f, %.1f) | Health: %.1f | Vel: (%.2f, %.2f, %.2f) | Invisible: %s | UUID: %s%s",
                 entity.getType().getName().getString(),
                 entity.getX(), entity.getY(), entity.getZ(),
                 entity instanceof LivingEntity le ? le.getHealth() : 0.0,
                 entity.getVelocity().x, entity.getVelocity().y, entity.getVelocity().z,
-                entity.getUuid()
+                entity.isInvisible(),
+                entity.getUuid(),
+                extra
             );
             
             sendDebugMessage(client.player, info);
@@ -427,6 +461,32 @@ public class MacroModClient implements ClientModInitializer {
             
             sendDebugMessage(client.player, info);
             LOGGER.info("[DEBUG] {}", info);
+        }
+    }
+
+    /**
+     * Extract skull owner name and texture info from a player head ItemStack.
+     * Returns a compact string representation or "none" if not a textured head.
+     */
+    private static String extractSkullOwnerInfo(ItemStack headStack) {
+        try {
+            // Convert ItemStack to debug string - shows full NBT structure
+            String stackStr = headStack.toString();
+            
+            // Look for SkullOwner in the string representation
+            if (!stackStr.contains("SkullOwner")) {
+                return "none";
+            }
+            
+            // Return the full stack info for deep inspection
+            // This includes NBT data in the toString() output
+            if (stackStr.length() > 200) {
+                return stackStr.substring(0, 200) + "...";
+            }
+            return stackStr;
+        } catch (Exception e) {
+            LOGGER.debug("Failed to extract skull owner info", e);
+            return "error";
         }
     }
 

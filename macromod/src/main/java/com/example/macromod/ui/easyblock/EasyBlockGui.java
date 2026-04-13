@@ -16,6 +16,7 @@ import net.minecraft.client.gui.Click;
 import net.minecraft.client.gui.DrawContext;
 import net.minecraft.entity.Entity;
 import net.minecraft.entity.LivingEntity;
+import net.minecraft.entity.decoration.ArmorStandEntity;
 import net.minecraft.item.ItemStack;
 import net.minecraft.registry.Registries;
 import net.minecraft.text.Text;
@@ -89,11 +90,11 @@ public class EasyBlockGui extends BasePopupScreen {
     // ═══════════════════════════════════════════════════════════════════
     // State — Auto Farm tab
     // ═══════════════════════════════════════════════════════════════════
-    private boolean optAutoFish, optFishAttack, optFishAttackDistance, optAttackMobs;
+    private boolean optAutoFish, optFishAttack, optFishAttackDistance, optAttackMobs, optCameraJitter, optAutoDeposit, optFishMove;
     private int optFishAttackSlot = -1;
     private int optFarmRadius = 8;
-    private float animFish, animFishAtk, animMobs;
-    private final int[][] fishTgBounds = new int[3][4]; // 0=fish, 1=fishAtk, 2=mobs
+    private float animFish, animFishAtk, animMobs, animCameraJitter, animAutoDeposit, animFishMove;
+    private final int[][] fishTgBounds = new int[6][4]; // 0=fish, 1=fishAtk, 2=mobs, 3=jitter, 4=deposit, 5=move
     private final int[][] hotbar = new int[9][2];
     private int modeBtnX, modeBtnY, modeBtnW, modeBtnH;
     private int radLeftX, radRightX, radBtnY;
@@ -121,11 +122,12 @@ public class EasyBlockGui extends BasePopupScreen {
     // ═══════════════════════════════════════════════════════════════════
     // State — Visuals tab
     // ═══════════════════════════════════════════════════════════════════
-    private boolean optTargetEsp, optEntitiesEsp, optBlockEsp;
-    private float animTargetEsp, animEntitiesEsp, animBlockEsp;
+    private boolean optTargetEsp, optEntitiesEsp, optBlockEsp, optFairySoulsEsp;
+    private float animTargetEsp, animEntitiesEsp, animBlockEsp, animFairySoulsEsp;
     private final int[] targetEspTgBounds = new int[4];
     private final int[] entitiesEspTgBounds = new int[4];
     private final int[] blockEspTgBounds = new int[4];
+    private final int[] fairySoulsEspTgBounds = new int[4];
     private int blockRadiusLeftX, blockRadiusRightX, blockRadiusBtnY;
     private int optBlockEspRadius;
 
@@ -162,6 +164,16 @@ public class EasyBlockGui extends BasePopupScreen {
     private final int[] debugLogTgBounds = new int[4];
     private int fovLeftX, fovRightX, fovBtnY;
 
+    // ── Smooth Aim slider state ──────────────────────────────────────────
+    private float optSaBaseLerp, optSaSpeedZero, optSaSpeedSlow, optSaSpeedFast;
+    private float optSaSlowZone, optSaFastZone;
+    private int saBaseLerpLeftX, saBaseLerpRightX, saBaseLerpBtnY;
+    private int saSpeedZeroLeftX, saSpeedZeroRightX, saSpeedZeroBtnY;
+    private int saSpeedSlowLeftX, saSpeedSlowRightX, saSpeedSlowBtnY;
+    private int saSpeedFastLeftX, saSpeedFastRightX, saSpeedFastBtnY;
+    private int saSlowZoneLeftX, saSlowZoneRightX, saSlowZoneBtnY;
+    private int saFastZoneLeftX, saFastZoneRightX, saFastZoneBtnY;
+
     // ═══════════════════════════════════════════════════════════════════
     // Constructor
     // ═══════════════════════════════════════════════════════════════════
@@ -173,9 +185,14 @@ public class EasyBlockGui extends BasePopupScreen {
         optFishAttack = mgr.isAttackEnabled();
         optFishAttackDistance = mgr.isAttackModeDistance();
         optFishAttackSlot = mgr.getAttackHotbarSlot();
+        optCameraJitter = mgr.isCameraJitterEnabled();
+        optAutoDeposit  = mgr.isAutoDepositEnabled();
+        optFishMove     = mgr.isCloseMovementEnabled();
         animFish = optAutoFish ? 1f : 0f;
         animFishAtk = optFishAttack ? 1f : 0f;
-        animMobs = optAttackMobs ? 1f : 0f;
+        animCameraJitter = optCameraJitter ? 1f : 0f;
+        animAutoDeposit  = optAutoDeposit  ? 1f : 0f;
+        animFishMove     = optFishMove     ? 1f : 0f;
 
         AutoFarmerManager farmer = AutoFarmerManager.getInstance();
         optAutoFarmer = farmer.isEnabled();
@@ -197,13 +214,22 @@ public class EasyBlockGui extends BasePopupScreen {
         optDebugLogging = modCfg.isDebugLogging();
         animDebugLogging = optDebugLogging ? 1f : 0f;
 
+        optSaBaseLerp  = modCfg.getSmoothAimBaseLerp();
+        optSaSpeedZero = modCfg.getSmoothAimSpeedZero();
+        optSaSpeedSlow = modCfg.getSmoothAimSpeedSlow();
+        optSaSpeedFast = modCfg.getSmoothAimSpeedFast();
+        optSaSlowZone  = modCfg.getSmoothAimSlowZone();
+        optSaFastZone  = modCfg.getSmoothAimFastZone();
+
         optTargetEsp = modCfg.isTargetEspEnabled();
         optEntitiesEsp = modCfg.isEntitiesEspEnabled();
         optBlockEsp = modCfg.isBlockEspEnabled();
+        optFairySoulsEsp = modCfg.isFairySoulsEspEnabled();
         optBlockEspRadius = modCfg.getBlockEspRadius();
         animTargetEsp = optTargetEsp ? 1f : 0f;
         animEntitiesEsp = optEntitiesEsp ? 1f : 0f;
         animBlockEsp = optBlockEsp ? 1f : 0f;
+        animFairySoulsEsp = optFairySoulsEsp ? 1f : 0f;
     }
 
     @Override
@@ -500,6 +526,9 @@ public class EasyBlockGui extends BasePopupScreen {
         animFish = Anim.smooth(animFish, optAutoFish ? 1f : 0f, 20f);
         animFishAtk = Anim.smooth(animFishAtk, optFishAttack ? 1f : 0f, 20f);
         animMobs = Anim.smooth(animMobs, optAttackMobs ? 1f : 0f, 20f);
+        animCameraJitter = Anim.smooth(animCameraJitter, optCameraJitter ? 1f : 0f, 20f);
+        animAutoDeposit  = Anim.smooth(animAutoDeposit,  optAutoDeposit  ? 1f : 0f, 20f);
+        animFishMove     = Anim.smooth(animFishMove,     optFishMove     ? 1f : 0f, 20f);
 
         for (int[] b : fishTgBounds) b[2] = -1;
         for (int[] h : hotbar) h[0] = -1;
@@ -529,6 +558,11 @@ public class EasyBlockGui extends BasePopupScreen {
                         modeBtnX + 9, modeBtnY + (mh - 8) / 2, C_TEXT2);
                 dy += mh + 8;
 
+                // Move toggle (only in close mode)
+                if (!optFishAttackDistance) {
+                    dy = drawFarmToggleRow(ctx, mx, my, lx + 32, rEdge, dy, "Move", animFishMove, 5) + 8;
+                }
+
                 // Hotbar item selector
                 ctx.drawTextWithShadow(textRenderer, Text.literal("Attack item:"),
                         lx + 32, dy, C_TEXT2);
@@ -551,6 +585,8 @@ public class EasyBlockGui extends BasePopupScreen {
                     dy += 26;
                 }
             }
+            dy = drawFarmToggleRow(ctx, mx, my, lx + 16, rEdge, dy, "AFK Jitter",   animCameraJitter, 3) + 8;
+            dy = drawFarmToggleRow(ctx, mx, my, lx + 16, rEdge, dy, "Auto Deposit", animAutoDeposit,  4) + 8;
         }
 
         // ── Combat section ────────────────────────────────────────────
@@ -724,6 +760,119 @@ public class EasyBlockGui extends BasePopupScreen {
         debugLogTgBounds[2] = tw;    debugLogTgBounds[3] = th;
         dy += rowH + 10;
 
+        // ── Smooth Aim section ────────────────────────────────────────
+
+        dy += 6;
+        dy = drawSectionHeader(ctx, lx, dy, "Smooth Aim");
+
+        // Base Lerp
+        {
+            String val = String.format("%.3f", optSaBaseLerp);
+            int vw = textRenderer.getWidth(val) + 12;
+            ctx.drawTextWithShadow(textRenderer, Text.literal("Base Lerp"), lx + 16, dy + 4, C_TEXT2);
+            int vx = rEdge - vw - 28;
+            saBaseLerpLeftX = vx - 20; saBaseLerpRightX = vx + vw + 4; saBaseLerpBtnY = dy;
+            boolean hl = mx >= saBaseLerpLeftX && mx < saBaseLerpLeftX + 16 && my >= dy && my < dy + 18;
+            boolean hr = mx >= saBaseLerpRightX && mx < saBaseLerpRightX + 16 && my >= dy && my < dy + 18;
+            RoundedRectRenderer.draw(ctx, saBaseLerpLeftX, dy, 16, 18, RB, hl ? C_NAV_ACT : C_NAV_BG);
+            RoundedRectRenderer.draw(ctx, saBaseLerpRightX, dy, 16, 18, RB, hr ? C_NAV_ACT : C_NAV_BG);
+            ctx.drawCenteredTextWithShadow(textRenderer, Text.literal("<"), saBaseLerpLeftX + 8, dy + 5, C_TEXT);
+            ctx.drawCenteredTextWithShadow(textRenderer, Text.literal(">"), saBaseLerpRightX + 8, dy + 5, C_TEXT);
+            RoundedRectRenderer.draw(ctx, vx, dy, vw, 18, RB, C_CARD);
+            ctx.drawCenteredTextWithShadow(textRenderer, Text.literal(val), vx + vw / 2, dy + 5, C_TEXT);
+            dy += 26;
+        }
+
+        // Speed (close)
+        {
+            String val = String.format("%.2f", optSaSpeedZero);
+            int vw = textRenderer.getWidth(val) + 12;
+            ctx.drawTextWithShadow(textRenderer, Text.literal("Speed (close)"), lx + 16, dy + 4, C_TEXT2);
+            int vx = rEdge - vw - 28;
+            saSpeedZeroLeftX = vx - 20; saSpeedZeroRightX = vx + vw + 4; saSpeedZeroBtnY = dy;
+            boolean hl = mx >= saSpeedZeroLeftX && mx < saSpeedZeroLeftX + 16 && my >= dy && my < dy + 18;
+            boolean hr = mx >= saSpeedZeroRightX && mx < saSpeedZeroRightX + 16 && my >= dy && my < dy + 18;
+            RoundedRectRenderer.draw(ctx, saSpeedZeroLeftX, dy, 16, 18, RB, hl ? C_NAV_ACT : C_NAV_BG);
+            RoundedRectRenderer.draw(ctx, saSpeedZeroRightX, dy, 16, 18, RB, hr ? C_NAV_ACT : C_NAV_BG);
+            ctx.drawCenteredTextWithShadow(textRenderer, Text.literal("<"), saSpeedZeroLeftX + 8, dy + 5, C_TEXT);
+            ctx.drawCenteredTextWithShadow(textRenderer, Text.literal(">"), saSpeedZeroRightX + 8, dy + 5, C_TEXT);
+            RoundedRectRenderer.draw(ctx, vx, dy, vw, 18, RB, C_CARD);
+            ctx.drawCenteredTextWithShadow(textRenderer, Text.literal(val), vx + vw / 2, dy + 5, C_TEXT);
+            dy += 26;
+        }
+
+        // Speed (mid)
+        {
+            String val = String.format("%.2f", optSaSpeedSlow);
+            int vw = textRenderer.getWidth(val) + 12;
+            ctx.drawTextWithShadow(textRenderer, Text.literal("Speed (mid)"), lx + 16, dy + 4, C_TEXT2);
+            int vx = rEdge - vw - 28;
+            saSpeedSlowLeftX = vx - 20; saSpeedSlowRightX = vx + vw + 4; saSpeedSlowBtnY = dy;
+            boolean hl = mx >= saSpeedSlowLeftX && mx < saSpeedSlowLeftX + 16 && my >= dy && my < dy + 18;
+            boolean hr = mx >= saSpeedSlowRightX && mx < saSpeedSlowRightX + 16 && my >= dy && my < dy + 18;
+            RoundedRectRenderer.draw(ctx, saSpeedSlowLeftX, dy, 16, 18, RB, hl ? C_NAV_ACT : C_NAV_BG);
+            RoundedRectRenderer.draw(ctx, saSpeedSlowRightX, dy, 16, 18, RB, hr ? C_NAV_ACT : C_NAV_BG);
+            ctx.drawCenteredTextWithShadow(textRenderer, Text.literal("<"), saSpeedSlowLeftX + 8, dy + 5, C_TEXT);
+            ctx.drawCenteredTextWithShadow(textRenderer, Text.literal(">"), saSpeedSlowRightX + 8, dy + 5, C_TEXT);
+            RoundedRectRenderer.draw(ctx, vx, dy, vw, 18, RB, C_CARD);
+            ctx.drawCenteredTextWithShadow(textRenderer, Text.literal(val), vx + vw / 2, dy + 5, C_TEXT);
+            dy += 26;
+        }
+
+        // Speed (far)
+        {
+            String val = String.format("%.2f", optSaSpeedFast);
+            int vw = textRenderer.getWidth(val) + 12;
+            ctx.drawTextWithShadow(textRenderer, Text.literal("Speed (far)"), lx + 16, dy + 4, C_TEXT2);
+            int vx = rEdge - vw - 28;
+            saSpeedFastLeftX = vx - 20; saSpeedFastRightX = vx + vw + 4; saSpeedFastBtnY = dy;
+            boolean hl = mx >= saSpeedFastLeftX && mx < saSpeedFastLeftX + 16 && my >= dy && my < dy + 18;
+            boolean hr = mx >= saSpeedFastRightX && mx < saSpeedFastRightX + 16 && my >= dy && my < dy + 18;
+            RoundedRectRenderer.draw(ctx, saSpeedFastLeftX, dy, 16, 18, RB, hl ? C_NAV_ACT : C_NAV_BG);
+            RoundedRectRenderer.draw(ctx, saSpeedFastRightX, dy, 16, 18, RB, hr ? C_NAV_ACT : C_NAV_BG);
+            ctx.drawCenteredTextWithShadow(textRenderer, Text.literal("<"), saSpeedFastLeftX + 8, dy + 5, C_TEXT);
+            ctx.drawCenteredTextWithShadow(textRenderer, Text.literal(">"), saSpeedFastRightX + 8, dy + 5, C_TEXT);
+            RoundedRectRenderer.draw(ctx, vx, dy, vw, 18, RB, C_CARD);
+            ctx.drawCenteredTextWithShadow(textRenderer, Text.literal(val), vx + vw / 2, dy + 5, C_TEXT);
+            dy += 26;
+        }
+
+        // Slow zone (°)
+        {
+            String val = String.format("%.0f\u00B0", optSaSlowZone);
+            int vw = textRenderer.getWidth(val) + 12;
+            ctx.drawTextWithShadow(textRenderer, Text.literal("Slow zone"), lx + 16, dy + 4, C_TEXT2);
+            int vx = rEdge - vw - 28;
+            saSlowZoneLeftX = vx - 20; saSlowZoneRightX = vx + vw + 4; saSlowZoneBtnY = dy;
+            boolean hl = mx >= saSlowZoneLeftX && mx < saSlowZoneLeftX + 16 && my >= dy && my < dy + 18;
+            boolean hr = mx >= saSlowZoneRightX && mx < saSlowZoneRightX + 16 && my >= dy && my < dy + 18;
+            RoundedRectRenderer.draw(ctx, saSlowZoneLeftX, dy, 16, 18, RB, hl ? C_NAV_ACT : C_NAV_BG);
+            RoundedRectRenderer.draw(ctx, saSlowZoneRightX, dy, 16, 18, RB, hr ? C_NAV_ACT : C_NAV_BG);
+            ctx.drawCenteredTextWithShadow(textRenderer, Text.literal("<"), saSlowZoneLeftX + 8, dy + 5, C_TEXT);
+            ctx.drawCenteredTextWithShadow(textRenderer, Text.literal(">"), saSlowZoneRightX + 8, dy + 5, C_TEXT);
+            RoundedRectRenderer.draw(ctx, vx, dy, vw, 18, RB, C_CARD);
+            ctx.drawCenteredTextWithShadow(textRenderer, Text.literal(val), vx + vw / 2, dy + 5, C_TEXT);
+            dy += 26;
+        }
+
+        // Fast zone (°)
+        {
+            String val = String.format("%.0f\u00B0", optSaFastZone);
+            int vw = textRenderer.getWidth(val) + 12;
+            ctx.drawTextWithShadow(textRenderer, Text.literal("Fast zone"), lx + 16, dy + 4, C_TEXT2);
+            int vx = rEdge - vw - 28;
+            saFastZoneLeftX = vx - 20; saFastZoneRightX = vx + vw + 4; saFastZoneBtnY = dy;
+            boolean hl = mx >= saFastZoneLeftX && mx < saFastZoneLeftX + 16 && my >= dy && my < dy + 18;
+            boolean hr = mx >= saFastZoneRightX && mx < saFastZoneRightX + 16 && my >= dy && my < dy + 18;
+            RoundedRectRenderer.draw(ctx, saFastZoneLeftX, dy, 16, 18, RB, hl ? C_NAV_ACT : C_NAV_BG);
+            RoundedRectRenderer.draw(ctx, saFastZoneRightX, dy, 16, 18, RB, hr ? C_NAV_ACT : C_NAV_BG);
+            ctx.drawCenteredTextWithShadow(textRenderer, Text.literal("<"), saFastZoneLeftX + 8, dy + 5, C_TEXT);
+            ctx.drawCenteredTextWithShadow(textRenderer, Text.literal(">"), saFastZoneRightX + 8, dy + 5, C_TEXT);
+            RoundedRectRenderer.draw(ctx, vx, dy, vw, 18, RB, C_CARD);
+            ctx.drawCenteredTextWithShadow(textRenderer, Text.literal(val), vx + vw / 2, dy + 5, C_TEXT);
+            dy += 26;
+        }
+
         // Footer
         ctx.drawTextWithShadow(textRenderer,
                 Text.literal("Edit config file for advanced settings."),
@@ -763,6 +912,7 @@ public class EasyBlockGui extends BasePopupScreen {
         contentH += 10 + 18 + rowH + 8; // Block ESP header+toggle
         contentH += 28 + 14; // radius cycler
         contentH += nearbyBlockTypes.size() * LIST_ITEM_H + 18; // block list + footer
+        contentH += 10 + 18 + rowH + 6; // Hypixel header+Fairy Souls toggle+desc
         int availH = ph - HEADER_H - 18;
         visualsMaxScrollY = Math.max(0, contentH - availH);
         visualsScrollY = Math.min(visualsScrollY, visualsMaxScrollY);
@@ -774,6 +924,23 @@ public class EasyBlockGui extends BasePopupScreen {
 
         Set<String> entityWL = new HashSet<>(modCfg.getEntityWhitelist());
         Set<String> blockWL  = new HashSet<>(modCfg.getBlockWhitelist());
+
+        // ── Hypixel section ───────────────────────────────────────────
+        dy += 10;
+        dy = drawSectionHeader(ctx, lx, dy, "Hypixel");
+
+        animFairySoulsEsp = Anim.smooth(animFairySoulsEsp, optFairySoulsEsp ? 1f : 0f, 20f);
+        ctx.drawTextWithShadow(textRenderer, Text.literal("Fairy Souls ESP"),
+                lx, dy + (rowH - 8) / 2, C_TEXT);
+        int fsTgX = rEdge - tw, fsTgY = dy + (rowH - th) / 2;
+        ToggleRenderer.draw(ctx, fsTgX, fsTgY, animFairySoulsEsp);
+        fairySoulsEspTgBounds[0] = fsTgX; fairySoulsEspTgBounds[1] = fsTgY;
+        fairySoulsEspTgBounds[2] = tw;    fairySoulsEspTgBounds[3] = th;
+        dy += rowH + 6;
+        ctx.drawTextWithShadow(textRenderer,
+                Text.literal("Cyan box around Fairy Souls (Armor Stands)"),
+                lx + 16, dy, C_TEXT3);
+        dy += 18;
 
         // ── Target ESP section ────────────────────────────────────────
         dy = drawSectionHeader(ctx, lx, dy, "Target ESP");
@@ -886,6 +1053,7 @@ public class EasyBlockGui extends BasePopupScreen {
                 dy += LIST_ITEM_H;
             }
         }
+        dy += 8;
 
         ctx.disableScissor();
     }
@@ -904,7 +1072,10 @@ public class EasyBlockGui extends BasePopupScreen {
         Box box = new Box(px - r, py - r, pz - r, px + r, py + r, pz + r);
         Set<String> seen = new LinkedHashSet<>();
         for (Entity e : mc.world.getEntitiesByClass(LivingEntity.class, box,
-                le -> le != mc.player && le.isAlive())) {
+                le -> le != mc.player && le.isAlive()
+                        && !(le instanceof net.minecraft.entity.player.PlayerEntity)
+                        && !(le instanceof ArmorStandEntity)
+                        && !le.isInvisible())) {
             String id = Registries.ENTITY_TYPE.getId(e.getType()).toString();
             seen.add(id);
         }
@@ -1047,9 +1218,12 @@ public class EasyBlockGui extends BasePopupScreen {
 
     private boolean handleAutoFarmClick(int imx, int imy) {
         // Fish toggles
-        if (hitTg(imx, imy, fishTgBounds[0])) { optAutoFish = !optAutoFish; syncFish(); return true; }
-        if (hitTg(imx, imy, fishTgBounds[1])) { optFishAttack = !optFishAttack; syncFish(); return true; }
-        if (hitTg(imx, imy, fishTgBounds[2])) { optAttackMobs = !optAttackMobs; return true; }
+        if (hitTg(imx, imy, fishTgBounds[0])) { optAutoFish    = !optAutoFish;    syncFish(); return true; }
+        if (hitTg(imx, imy, fishTgBounds[1])) { optFishAttack  = !optFishAttack;  syncFish(); return true; }
+        if (hitTg(imx, imy, fishTgBounds[2])) { optAttackMobs  = !optAttackMobs;  return true; }
+        if (hitTg(imx, imy, fishTgBounds[3])) { optCameraJitter = !optCameraJitter; syncFish(); return true; }
+        if (hitTg(imx, imy, fishTgBounds[4])) { optAutoDeposit   = !optAutoDeposit;  syncFish(); return true; }
+        if (hitTg(imx, imy, fishTgBounds[5])) { optFishMove      = !optFishMove;     syncFish(); return true; }
 
         // Mode button
         if (modeBtnW > 0 && imx >= modeBtnX && imx < modeBtnX + modeBtnW
@@ -1158,6 +1332,13 @@ public class EasyBlockGui extends BasePopupScreen {
             return true;
         }
 
+        // Fairy Souls ESP toggle
+        if (hitTg(imx, imy, fairySoulsEspTgBounds)) {
+            optFairySoulsEsp = !optFairySoulsEsp;
+            syncVisuals();
+            return true;
+        }
+
         // Block ESP radius cycler
         if (imy >= blockRadiusBtnY && imy < blockRadiusBtnY + 18) {
             if (imx >= blockRadiusLeftX && imx < blockRadiusLeftX + 16) {
@@ -1249,6 +1430,68 @@ public class EasyBlockGui extends BasePopupScreen {
             return true;
         }
 
+        // Smooth Aim cyclers
+        if (imy >= saBaseLerpBtnY && imy < saBaseLerpBtnY + 18) {
+            if (imx >= saBaseLerpLeftX && imx < saBaseLerpLeftX + 16) {
+                optSaBaseLerp = Math.max(0.005f, optSaBaseLerp - 0.005f);
+                syncSmoothAim(); return true;
+            }
+            if (imx >= saBaseLerpRightX && imx < saBaseLerpRightX + 16) {
+                optSaBaseLerp = Math.min(0.15f, optSaBaseLerp + 0.005f);
+                syncSmoothAim(); return true;
+            }
+        }
+        if (imy >= saSpeedZeroBtnY && imy < saSpeedZeroBtnY + 18) {
+            if (imx >= saSpeedZeroLeftX && imx < saSpeedZeroLeftX + 16) {
+                optSaSpeedZero = Math.max(0.05f, optSaSpeedZero - 0.05f);
+                syncSmoothAim(); return true;
+            }
+            if (imx >= saSpeedZeroRightX && imx < saSpeedZeroRightX + 16) {
+                optSaSpeedZero = Math.min(3.0f, optSaSpeedZero + 0.05f);
+                syncSmoothAim(); return true;
+            }
+        }
+        if (imy >= saSpeedSlowBtnY && imy < saSpeedSlowBtnY + 18) {
+            if (imx >= saSpeedSlowLeftX && imx < saSpeedSlowLeftX + 16) {
+                optSaSpeedSlow = Math.max(0.1f, optSaSpeedSlow - 0.05f);
+                syncSmoothAim(); return true;
+            }
+            if (imx >= saSpeedSlowRightX && imx < saSpeedSlowRightX + 16) {
+                optSaSpeedSlow = Math.min(4.0f, optSaSpeedSlow + 0.05f);
+                syncSmoothAim(); return true;
+            }
+        }
+        if (imy >= saSpeedFastBtnY && imy < saSpeedFastBtnY + 18) {
+            if (imx >= saSpeedFastLeftX && imx < saSpeedFastLeftX + 16) {
+                optSaSpeedFast = Math.max(0.1f, optSaSpeedFast - 0.05f);
+                syncSmoothAim(); return true;
+            }
+            if (imx >= saSpeedFastRightX && imx < saSpeedFastRightX + 16) {
+                optSaSpeedFast = Math.min(5.0f, optSaSpeedFast + 0.05f);
+                syncSmoothAim(); return true;
+            }
+        }
+        if (imy >= saSlowZoneBtnY && imy < saSlowZoneBtnY + 18) {
+            if (imx >= saSlowZoneLeftX && imx < saSlowZoneLeftX + 16) {
+                optSaSlowZone = Math.max(3f, optSaSlowZone - 1f);
+                syncSmoothAim(); return true;
+            }
+            if (imx >= saSlowZoneRightX && imx < saSlowZoneRightX + 16) {
+                optSaSlowZone = Math.min(30f, optSaSlowZone + 1f);
+                syncSmoothAim(); return true;
+            }
+        }
+        if (imy >= saFastZoneBtnY && imy < saFastZoneBtnY + 18) {
+            if (imx >= saFastZoneLeftX && imx < saFastZoneLeftX + 16) {
+                optSaFastZone = Math.max(10f, optSaFastZone - 1f);
+                syncSmoothAim(); return true;
+            }
+            if (imx >= saFastZoneRightX && imx < saFastZoneRightX + 16) {
+                optSaFastZone = Math.min(90f, optSaFastZone + 1f);
+                syncSmoothAim(); return true;
+            }
+        }
+
         return false;
     }
 
@@ -1300,6 +1543,9 @@ public class EasyBlockGui extends BasePopupScreen {
     private void syncFish() {
         AutoFishingManager.getInstance().setEnabled(optAutoFish);
         AutoFishingManager.getInstance().setAttackConfig(optFishAttack, optFishAttackDistance, optFishAttackSlot);
+        AutoFishingManager.getInstance().setCameraJitter(optCameraJitter);
+        AutoFishingManager.getInstance().setAutoDeposit(optAutoDeposit);
+        AutoFishingManager.getInstance().setCloseMovement(optFishMove);
     }
 
     private void syncFarmer() {
@@ -1328,6 +1574,7 @@ public class EasyBlockGui extends BasePopupScreen {
         cfg.setTargetEspEnabled(optTargetEsp);
         cfg.setEntitiesEspEnabled(optEntitiesEsp);
         cfg.setBlockEspEnabled(optBlockEsp);
+        cfg.setFairySoulsEspEnabled(optFairySoulsEsp);
         cfg.setBlockEspRadius(optBlockEspRadius);
         MacroModClient.getConfigManager().save();
     }
@@ -1343,5 +1590,26 @@ public class EasyBlockGui extends BasePopupScreen {
         ModConfig cfg = MacroModClient.getConfigManager().getConfig();
         cfg.setDebugLogging(optDebugLogging);
         MacroModClient.getConfigManager().save();
+    }
+
+    private void syncSmoothAim() {
+        ModConfig cfg = MacroModClient.getConfigManager().getConfig();
+        cfg.setSmoothAimBaseLerp(optSaBaseLerp);
+        cfg.setSmoothAimSpeedZero(optSaSpeedZero);
+        cfg.setSmoothAimSpeedSlow(optSaSpeedSlow);
+        cfg.setSmoothAimSpeedFast(optSaSpeedFast);
+        cfg.setSmoothAimSlowZone(optSaSlowZone);
+        cfg.setSmoothAimFastZone(optSaFastZone);
+        MacroModClient.getConfigManager().save();
+
+        var sa = MacroModClient.getSmoothAim();
+        if (sa != null) {
+            sa.setBaseLerp(optSaBaseLerp);
+            sa.setSpeedAtZero(optSaSpeedZero);
+            sa.setSpeedAtSlow(optSaSpeedSlow);
+            sa.setSpeedAtFast(optSaSpeedFast);
+            sa.setSlowZoneDeg(optSaSlowZone);
+            sa.setFastZoneDeg(optSaFastZone);
+        }
     }
 }

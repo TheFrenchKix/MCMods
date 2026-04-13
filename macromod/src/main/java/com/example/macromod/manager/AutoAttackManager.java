@@ -2,12 +2,14 @@ package com.example.macromod.manager;
 
 import com.example.macromod.MacroModClient;
 import com.example.macromod.util.HumanReactionTime;
+import com.example.macromod.util.MouseInputHelper;
 import net.fabricmc.api.EnvType;
 import net.fabricmc.api.Environment;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.network.ClientPlayerEntity;
 import net.minecraft.entity.Entity;
 import net.minecraft.entity.LivingEntity;
+import net.minecraft.entity.decoration.ArmorStandEntity;
 import net.minecraft.util.hit.HitResult;
 import net.minecraft.util.math.Box;
 import net.minecraft.util.math.Vec3d;
@@ -69,8 +71,14 @@ public class AutoAttackManager {
     /** Consecutive ticks without line-of-sight before releasing the target. */
     private static final int MAX_NO_LOS_TICKS = 5;
 
-    /** How often (ticks) to push a new aim target to SmoothAim (reduces jitter from per-tick entity movement). */
-    private static final int AIM_UPDATE_INTERVAL_TICKS = 2;
+    /** How often (ticks) to push a new aim target to SmoothAim. 1 = every tick for smooth live tracking. */
+    private static final int AIM_UPDATE_INTERVAL_TICKS = 1;
+
+    /**
+     * Milliseconds the crosshair must be on-target before the first click is sent.
+     * Simulates the small human delay between "I'm on target" and actually clicking.
+     */
+    private static final long ATTACK_DWELL_MS = 150L;
 
     /** How often (ticks) to emit a periodic debug status line. */
     private static final int DEBUG_STATUS_INTERVAL = 20;
@@ -80,6 +88,8 @@ public class AutoAttackManager {
      * 0.9 = attack at 90 % charge, giving consistent DPS without "ghost" swings.
      */
     private static final float ATTACK_COOLDOWN_THRESHOLD = 0.9f;
+    /** Distance at which to start spam-clicking to build attack animation. */
+    private static final float SPAM_CLICK_DISTANCE = 4.0f;
 
     // ── Settings (configurable from GUI) ─────────────────────────────
     private float attackRange = 5.0f;
@@ -92,6 +102,10 @@ public class AutoAttackManager {
     private int noLosTicks = 0;
     private int aimUpdateTick = 0;
     private int debugTick = 0;
+    /** System time when crosshair first landed on-target. -1 when not on target. */
+    private long firstOnTargetMs = -1L;
+    /** System time of last spam click (for CPS throttling). */
+    private long lastSpamClickMs = -1L;
 
     // ── Config API ───────────────────────────────────────────────────
 
@@ -117,11 +131,13 @@ public class AutoAttackManager {
         noLosTicks = 0;
         aimUpdateTick = 0;
         debugTick = 0;
+        firstOnTargetMs = -1L;
     }
 
     public void disable() {
         enabled = false;
         currentTarget = null;
+        firstOnTargetMs = -1L;
         // Release SmoothAim so macros can resume aiming at their own targets
         var sa = MacroModClient.getSmoothAim();
         if (sa != null) sa.clearTarget();
@@ -150,6 +166,8 @@ public class AutoAttackManager {
             }
             targetLockTicks = 0;
             noLosTicks = 0;
+            firstOnTargetMs = -1L; // reset dwell timer for new target
+            lastSpamClickMs = -1L; // reset spam timer for new target
             if (isDebug()) {
                 LOGGER.info("[AutoAttack] New target: {} (dist={})",
                         currentTarget.getName().getString(),
@@ -199,18 +217,46 @@ public class AutoAttackManager {
         double distSq = player.squaredDistanceTo(currentTarget);
         double rangeSq = attackRange * attackRange;
         double releaseRangeSq = (attackRange + 0.5) * (attackRange + 0.5);
+        double spamDistSq = SPAM_CLICK_DISTANCE * SPAM_CLICK_DISTANCE;
+        
         if (distSq > releaseRangeSq) {
             client.options.forwardKey.setPressed(true);
         } else if (distSq <= rangeSq) {
             releaseForward();
         }
 
-        // ── 6. Attack only when aimed at target and cooldown is ready ─────
+        // ── 6. Spam-click at 3.5 blocks range with CPS throttling ──────────
+        // Spam using fixed CPS (10) for consistent auto-attack behavior
+        int spamCps = 10;
+        long cpsIntervalMs = 1000L / spamCps;
+        
+        var saCheck = MacroModClient.getSmoothAim();
+        boolean lookingAtTarget = saCheck != null && saCheck.isOnTarget(player, 6f);
+        
+        if (distSq <= spamDistSq) {
+            long now = System.currentTimeMillis();
+            if (lastSpamClickMs < 0 || now - lastSpamClickMs >= cpsIntervalMs) {
+                float cooldownProgress = player.getAttackCooldownProgress(0f);
+                if (cooldownProgress >= ATTACK_COOLDOWN_THRESHOLD) {
+                    MouseInputHelper.leftClick(client);
+                    lastSpamClickMs = now;
+                }
+            }
+        }
+        
+        // ── 7. Normal attack when aimed at target and cooldown is ready ────
         if (distSq <= rangeSq) {
-            var saCheck = MacroModClient.getSmoothAim();
-            boolean lookingAtTarget = saCheck != null && saCheck.isOnTarget(player, 6f);
             float cooldownProgress = player.getAttackCooldownProgress(0f);
             boolean cooldownReady = cooldownProgress >= ATTACK_COOLDOWN_THRESHOLD;
+
+            // Track first moment crosshair settles on target (dwell timer)
+            if (lookingAtTarget) {
+                if (firstOnTargetMs < 0) firstOnTargetMs = System.currentTimeMillis();
+            } else {
+                firstOnTargetMs = -1L; // reset if aim drifts off-target
+            }
+            boolean dwellReady = firstOnTargetMs >= 0
+                    && System.currentTimeMillis() - firstOnTargetMs >= ATTACK_DWELL_MS;
 
             if (isDebug() && !lookingAtTarget) {
                 LOGGER.info("[AutoAttack] In range but NOT on target — yaw={} pitch={}",
@@ -222,7 +268,7 @@ public class AutoAttackManager {
                         String.format("%.2f", cooldownProgress));
             }
 
-            if (lookingAtTarget && cooldownReady) {
+            if (lookingAtTarget && cooldownReady && dwellReady) {
                 if (isDebug()) {
                     LOGGER.info("[AutoAttack] Attacking {} dist={} yaw={} pitch={} cooldown={}",
                             currentTarget.getName().getString(),
@@ -231,7 +277,7 @@ public class AutoAttackManager {
                             String.format("%.2f", player.getPitch()),
                             String.format("%.2f", cooldownProgress));
                 }
-                client.interactionManager.attackEntity(player, currentTarget);
+                MouseInputHelper.leftClick(client);
             }
         }
     }
@@ -247,6 +293,9 @@ public class AutoAttackManager {
                 LivingEntity.class, box,
                 e -> e != player
                         && e.isAlive()
+                        && !(e instanceof net.minecraft.entity.player.PlayerEntity)
+                        && !(e instanceof ArmorStandEntity)
+                        && !e.isInvisible()
                         && e.squaredDistanceTo(player) <= r * r);
 
         if (candidates.isEmpty()) return null;

@@ -18,7 +18,7 @@ public class ModConfig {
     private int defaultMiningDelay = 50;
     private int defaultMoveTimeout = 200;
     private float defaultArrivalRadius = 1.5f;
-    private boolean defaultAttackDanger = true;
+    private boolean defaultAttackDanger = false;
     private boolean defaultSkipMismatch = true;
     private int maxPathNodes = 2000;
     private boolean recordingAutoAddBlocks = false;
@@ -33,10 +33,17 @@ public class ModConfig {
     // ── ESP / Visuals ────────────────────────────────────────────────
     private boolean targetEspEnabled = true;
     private boolean entitiesEspEnabled = false;
-    private boolean blockEspEnabled = false;
-    private int blockEspRadius = 16;
+    private boolean blockEspEnabled = false;    private boolean fairySoulsEspEnabled = false;    private int blockEspRadius = 16;
     private List<String> entityWhitelist = new ArrayList<>();
     private List<String> blockWhitelist = new ArrayList<>();
+
+    // ── Smooth Aim ───────────────────────────────────────────────────────
+    private float smoothAimBaseLerp  = 0.035f;
+    private float smoothAimSpeedZero = 0.55f;
+    private float smoothAimSpeedSlow = 1.0f;
+    private float smoothAimSpeedFast = 1.25f;
+    private float smoothAimSlowZone  = 15f;
+    private float smoothAimFastZone  = 55f;
 
     public String getHudPosition() {
         return hudPosition;
@@ -150,6 +157,9 @@ public class ModConfig {
     public int getBlockEspRadius() { return blockEspRadius; }
     public void setBlockEspRadius(int r) { this.blockEspRadius = Math.max(4, Math.min(32, r)); }
 
+    public boolean isFairySoulsEspEnabled() { return fairySoulsEspEnabled; }
+    public void setFairySoulsEspEnabled(boolean v) { this.fairySoulsEspEnabled = v; }
+
     public List<String> getEntityWhitelist() {
         if (entityWhitelist == null) {
             entityWhitelist = new ArrayList<>();
@@ -165,4 +175,24 @@ public class ModConfig {
         return blockWhitelist;
     }
     public void setBlockWhitelist(List<String> list) { this.blockWhitelist = list; }
+
+    // ── Smooth Aim getters/setters ───────────────────────────────────────
+
+    public float getSmoothAimBaseLerp()  { return smoothAimBaseLerp; }
+    public void  setSmoothAimBaseLerp(float v)  { smoothAimBaseLerp  = Math.max(0.005f, Math.min(0.15f, v)); }
+
+    public float getSmoothAimSpeedZero() { return smoothAimSpeedZero; }
+    public void  setSmoothAimSpeedZero(float v) { smoothAimSpeedZero = Math.max(0.05f, Math.min(3.0f, v)); }
+
+    public float getSmoothAimSpeedSlow() { return smoothAimSpeedSlow; }
+    public void  setSmoothAimSpeedSlow(float v) { smoothAimSpeedSlow = Math.max(0.1f, Math.min(4.0f, v)); }
+
+    public float getSmoothAimSpeedFast() { return smoothAimSpeedFast; }
+    public void  setSmoothAimSpeedFast(float v) { smoothAimSpeedFast = Math.max(0.1f, Math.min(5.0f, v)); }
+
+    public float getSmoothAimSlowZone()  { return smoothAimSlowZone; }
+    public void  setSmoothAimSlowZone(float v)  { smoothAimSlowZone  = Math.max(3f, Math.min(30f, v)); }
+
+    public float getSmoothAimFastZone()  { return smoothAimFastZone; }
+    public void  setSmoothAimFastZone(float v)  { smoothAimFastZone  = Math.max(10f, Math.min(90f, v)); }
 }

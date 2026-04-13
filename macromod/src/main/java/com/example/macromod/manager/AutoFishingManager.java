@@ -1,24 +1,33 @@
 package com.example.macromod.manager;
 
+import com.example.macromod.MacroModClient;
 import com.example.macromod.util.HumanReactionTime;
+import com.example.macromod.util.MouseInputHelper;
 import net.fabricmc.api.EnvType;
 import net.fabricmc.api.Environment;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.network.ClientPlayerEntity;
 import net.minecraft.entity.Entity;
 import net.minecraft.entity.LivingEntity;
+import net.minecraft.entity.decoration.ArmorStandEntity;
+import net.minecraft.entity.player.PlayerEntity;
 import net.minecraft.entity.projectile.FishingBobberEntity;
 import net.minecraft.item.FishingRodItem;
 import net.minecraft.text.Text;
 import net.minecraft.util.Formatting;
-import net.minecraft.util.Hand;
 import net.minecraft.util.hit.HitResult;
 import net.minecraft.util.math.Box;
 import net.minecraft.util.math.Vec3d;
+import net.minecraft.block.entity.ChestBlockEntity;
+import net.minecraft.client.gui.screen.ingame.HandledScreen;
+import net.minecraft.screen.slot.SlotActionType;
+import net.minecraft.util.math.BlockPos;
 import net.minecraft.world.RaycastContext;
 
 import java.util.List;
 import java.util.Random;
+import java.util.HashSet;
+import java.util.Set;
 
 /**
  * Standalone auto-fishing state machine, driven by the client tick event.
@@ -47,21 +56,33 @@ public class AutoFishingManager {
     /** How far the bobber must dip in one tick to count as a bite (blocks). */
     private static final double BITE_DIP_THRESHOLD = 0.07;
     /** Entity scan radius around the bobber (blocks). */
-    private static final float  ENTITY_SCAN_RADIUS  = 1.5f;
+    private static final float  ENTITY_SCAN_RADIUS  = 2.5f;
 
     // ── Attack / kill constants ──────────────────────────────────────
     /** Time to wait for prey to spawn after reeling in. */
-    private static final long   PREY_SCAN_MS        = 2_000L;
+    private static final long   PREY_SCAN_MS        = 800L;  // Reduced for faster recast when no prey spawns
     /** Radius around last bobber pos to scan for prey (blocks). */
-    private static final double PREY_SCAN_RADIUS    = 2.0;
-    /** Interval between attack actions (10 game ticks). */
-    private static final long   ATTACK_INTERVAL_MS  = 500L;
+    private static final double PREY_SCAN_RADIUS    = 4.0;
+    /** Minimum dwell time while crosshair is on target before attacking. */
+    private static final long   ATTACK_DWELL_MS     = 150L;
+    /** Default CPS if no macro config is active. */
+    private static final int    DEFAULT_ATTACK_CPS  = 10;
     /** Maximum time to spend trying to kill one target. */
     private static final long   KILL_TIMEOUT_MS     = 6_000L;
+    /** Max 3D reach distance required for close-mode attack. */
+    private static final float  CLOSE_REACH_DISTANCE = 2.5f;
+    /** Distance at which to start spam-clicking to build attack animation. */
+    private static final float  SPAM_CLICK_DISTANCE = 4.0f;
+    /** How long to wait in close mode before skipping an unchanged target. */
+    private static final long   CLOSE_REACH_TIMEOUT_MS = 10_000L;
     /** How many consecutive no-LOS ticks before we skip the target. */
     private static final int    MAX_NO_LOS          = 3;
     /** Degrees to rotate per tick when smooth-aiming. */
     private static final float  AIM_STEP_DEG        = 15f;
+    /** Block radius around player to scan for chests. */
+    private static final int    DEPOSIT_SCAN_RADIUS = 8;
+    /** Max ms to wait for a chest screen to open after interacting. */
+    private static final long   DEPOSIT_OPEN_WAIT_MS = 2_000L;
 
     // ── Singleton ───────────────────────────────────────────────────
     private static AutoFishingManager INSTANCE;
@@ -71,14 +92,13 @@ public class AutoFishingManager {
     }
 
     // ── State ────────────────────────────────────────────────────────
-    private enum FishState { IDLE, CASTING, WAITING, REELING, WAITING_FOR_PREY, KILLING, DELAY }
+    private enum FishState { IDLE, CASTING, WAITING, REELING, WAITING_FOR_PREY, KILLING, DELAY, DEPOSITING, RETURNING_LOOK }
 
     private FishState fishState    = FishState.IDLE;
     private long      stateStartMs = 0L;
     private double    lastBobberY  = Double.NaN;
     private boolean   enabled      = false;
-    private Vec3d     lastBobberPos = null;
-
+    private Vec3d     lastBobberPos = null;    private Set<java.util.UUID> preCastEntityUUIDs = new HashSet<>();
     // ── Attack config (set from AutoFarmScreen) ───────────────────────
     private boolean attackEnabled      = false;
     private boolean attackModeDistance = false;   // false = close, true = distance
@@ -87,16 +107,38 @@ public class AutoFishingManager {
     // ── Kill state ────────────────────────────────────────────────────
     private Entity killTarget   = null;
     private int    noLosCount   = 0;
-    private long   lastAttackMs = 0L;    // Random aim point within entity bounding box (anti-cheat)
+    private long   lastAttackMs = 0L;
+    private long   lastSpamClickMs = 0L;    // Random aim point within entity bounding box (anti-cheat)
     private static final Random AIM_RAND       = new Random();
     private Vec3d  killAimPoint               = null;
     private long   killAimRefreshMs           = 0L;
     private long   killAimRefreshInterval     = 700L;
+    private long   firstOnTargetMs            = -1L;
+    private double killStartDistanceSq        = -1.0;
+    private double killBestDistanceSq         = Double.MAX_VALUE;
+    private float  killStartHealth            = -1f;
+    // ── Saved crosshair for post-action camera return ─────────────────────
+    private float  fishingLookYaw             = 0f;
+    private float  fishingLookPitch           = 0f;
 
     // ── Reaction time per session ──────────────────────────────────────
     private long recastDelayMs = RECAST_DELAY_MS;  // Randomized per cast cycle
     private long biteReactionMs = 0L;              // Reaction time when bite detected
-    private long attackIntervalWithJitter = ATTACK_INTERVAL_MS; // Varies per attack
+    private long attackIntervalWithJitter = 1000L / DEFAULT_ATTACK_CPS; // Varies per attack
+
+    // ── AFK camera jitter ──────────────────────────────────────────────
+    private boolean cameraJitter        = false;
+    private long    lastJitterMs        = 0L;
+    private long    nextJitterIntervalMs = 5_000L;
+
+    // ── Auto Deposit ───────────────────────────────────────────────────
+    private boolean  autoDeposit     = false;
+    private int      depositPhase    = 0;
+    private long     depositPhaseMs  = 0L;
+    private BlockPos depositChestPos = null;
+
+    // ── Close mode movement control ────────────────────────────────────
+    private boolean closeMovement = true;  // In close mode, move toward entity (can be disabled to wait)
 
     private AutoFishingManager() {}
 
@@ -104,8 +146,13 @@ public class AutoFishingManager {
     public void setEnabled(boolean enabled) {
         this.enabled = enabled;
         if (!enabled) {
-            fishState  = FishState.IDLE;
-            killTarget = null;
+            fishState    = FishState.IDLE;
+            killTarget   = null;
+            depositPhase = 0;
+            preCastEntityUUIDs.clear();
+            // Clear any ongoing SmoothAim target set by jitter or other aiming
+            var sa = MacroModClient.getSmoothAim();
+            if (sa != null) sa.clearTarget();
         }
     }
 
@@ -124,24 +171,47 @@ public class AutoFishingManager {
     public boolean isAttackModeDistance() { return attackModeDistance; }
     public int     getAttackHotbarSlot()  { return attackHotbarSlot; }
 
+    public void    setCameraJitter(boolean v)  { this.cameraJitter = v; }
+    public boolean isCameraJitterEnabled()     { return cameraJitter; }
+
+    public void    setAutoDeposit(boolean v)   { this.autoDeposit = v; }
+    public boolean isAutoDepositEnabled()      { return autoDeposit; }
+
+    public void    setCloseMovement(boolean v) { this.closeMovement = v; }
+    public boolean isCloseMovementEnabled()    { return closeMovement; }
+
     // ── Tick (called every client tick) ─────────────────────────────
     public void tick() {
         if (!enabled) return;
 
         MinecraftClient client = MinecraftClient.getInstance();
-        if (client.player == null || client.world == null
-                || client.interactionManager == null
-                || client.currentScreen != null) return;   // don't fish while GUI open
+        if (client.player == null || client.world == null || client.interactionManager == null) return;
 
         ClientPlayerEntity player = client.player;
+        long now = System.currentTimeMillis();
+
+        // Safety: stop the feature immediately after death to avoid unintended inputs.
+        if (!player.isAlive() || player.getHealth() <= 0.0f) {
+            player.sendMessage(Text.literal("Auto Fishing disabled: player died.").formatted(Formatting.RED), false);
+            setDisable();
+            return;
+        }
+
+        // Handle deposit state before the GUI screen check (chest screen must remain open)
+        if (fishState == FishState.DEPOSITING) {
+            tickDeposit(client, player, now);
+            return;
+        }
+
+        if (client.currentScreen != null) return;   // don't fish while GUI open
 
         // Outside kill states, ensure a fishing rod is held
-        if (fishState != FishState.WAITING_FOR_PREY && fishState != FishState.KILLING) {
+        if (fishState != FishState.WAITING_FOR_PREY && fishState != FishState.KILLING
+            && fishState != FishState.RETURNING_LOOK) {
             if (!hasRodInHand(player) && !equipRod(player)) return;
         }
 
         FishingBobberEntity bobber = player.fishHook;
-        long now = System.currentTimeMillis();
 
         switch (fishState) {
 
@@ -158,8 +228,20 @@ public class AutoFishingManager {
                     fishState    = FishState.WAITING;
                     stateStartMs = now;
                     lastBobberY  = bobber.getY();
-                    lastBobberPos = new Vec3d(bobber.getX(), bobber.getY(), bobber.getZ());
-                } else if (now - stateStartMs > CAST_TIMEOUT_MS) {
+                    lastBobberPos = new Vec3d(bobber.getX(), bobber.getY(), bobber.getZ());                    
+                    // Record all existing entities near the bobber (for new entity tracking)
+                    // Only entities spawned AFTER this will be considered prey
+                    preCastEntityUUIDs.clear();
+                    if (client.world != null) {
+                        double r = PREY_SCAN_RADIUS;
+                        Box scanBox = new Box(
+                                bobber.getX() - r, bobber.getY() - r, bobber.getZ() - r,
+                                bobber.getX() + r, bobber.getY() + r, bobber.getZ() + r);
+                        for (LivingEntity e : client.world.getEntitiesByClass(LivingEntity.class, scanBox, 
+                                le -> le != player && le.isAlive())) {
+                            preCastEntityUUIDs.add(e.getUuid());
+                        }
+                    }                } else if (now - stateStartMs > CAST_TIMEOUT_MS) {
                     // No bobber after timeout — try again
                     fishState = FishState.IDLE;
                 }
@@ -171,6 +253,22 @@ public class AutoFishingManager {
                     fishState    = FishState.DELAY;
                     stateStartMs = now;
                     break;
+                }
+
+                // ── AFK camera jitter (anti-AFK detection) ───────────────
+                if (cameraJitter && now - lastJitterMs >= nextJitterIntervalMs) {
+                    float jitterYaw   = player.getYaw()   + (AIM_RAND.nextFloat() - 0.5f) * 4.0f;
+                    float jitterPitch = Math.max(-90f, Math.min(90f,
+                            player.getPitch() + (AIM_RAND.nextFloat() - 0.5f) * 2.5f));
+                    var saJitter = MacroModClient.getSmoothAim();
+                    if (saJitter != null) {
+                        saJitter.setTarget(directionToPoint(player.getEyePos(), jitterYaw, jitterPitch));
+                    } else {
+                        player.setYaw(jitterYaw);
+                        player.setPitch(jitterPitch);
+                    }
+                    lastJitterMs         = now;
+                    nextJitterIntervalMs = 4_000L + (long)(AIM_RAND.nextFloat() * 6_000L);
                 }
 
                 boolean bite = false;
@@ -195,6 +293,8 @@ public class AutoFishingManager {
                 }
 
                 if (bite) {
+                                        fishingLookYaw   = player.getYaw();
+                                        fishingLookPitch = player.getPitch();
                     cast(client, player);   // right-click again = reel in
                     fishState    = FishState.REELING;
                     stateStartMs = now;
@@ -211,6 +311,7 @@ public class AutoFishingManager {
                         killTarget   = null;
                         noLosCount   = 0;
                         lastAttackMs = 0L;
+                        firstOnTargetMs = -1L;
                         fishState    = FishState.WAITING_FOR_PREY;
                     } else {
                         fishState    = FishState.DELAY;
@@ -233,9 +334,16 @@ public class AutoFishingManager {
                     killTarget           = prey;
                     noLosCount           = 0;
                     lastAttackMs         = 0L;
+                    firstOnTargetMs      = -1L;
+                    killStartDistanceSq  = prey.squaredDistanceTo(player);
+                    killBestDistanceSq   = killStartDistanceSq;
+                    killStartHealth      = (prey instanceof LivingEntity le) ? le.getHealth() : -1f;
                     killAimPoint         = randomKillAim(prey);
                     killAimRefreshInterval = 600L + AIM_RAND.nextInt(600);
                     killAimRefreshMs     = now;
+                    if (attackHotbarSlot >= 0) {
+                        player.getInventory().setSelectedSlot(attackHotbarSlot);
+                    }
                     fishState            = FishState.KILLING;
                     stateStartMs         = now;
                 }
@@ -245,15 +353,15 @@ public class AutoFishingManager {
                 // Target dead or gone?
                 if (killTarget == null || !killTarget.isAlive()) {
                     killTarget   = null;
-                    fishState    = FishState.DELAY;
+                    fishState    = FishState.RETURNING_LOOK;
                     stateStartMs = now;
                     break;
                 }
 
-                // Timeout guard (skip if we can't kill within the limit)
-                if (now - stateStartMs > KILL_TIMEOUT_MS) {
+                // Timeout guard (distance mode only)
+                if (attackModeDistance && now - stateStartMs > KILL_TIMEOUT_MS) {
                     killTarget   = null;
-                    fishState    = FishState.DELAY;
+                    fishState    = FishState.RETURNING_LOOK;
                     stateStartMs = now;
                     break;
                 }
@@ -262,13 +370,45 @@ public class AutoFishingManager {
                 if (!hasLineOfSight(client, player, killTarget)) {
                     noLosCount++;
                     if (noLosCount >= MAX_NO_LOS) {
-                        killTarget   = null;
-                        fishState    = FishState.DELAY;
-                        stateStartMs = now;
+                        killTarget      = null;
+                        firstOnTargetMs = -1L;
+                        fishState       = FishState.RETURNING_LOOK;
+                        stateStartMs    = now;
                     }
                     break;
                 }
                 noLosCount = 0;
+
+                // Close mode: wait until target is really reachable in 3D (< 3 blocks).
+                // If after 10s it never got closer and never lost health, skip and fish again.
+                if (!attackModeDistance) {
+                    double distSq = killTarget.squaredDistanceTo(player);
+                    if (distSq < killBestDistanceSq) killBestDistanceSq = distSq;
+
+                    boolean reachable = distSq <= (double) CLOSE_REACH_DISTANCE * CLOSE_REACH_DISTANCE;
+                    float currentHealth = (killTarget instanceof LivingEntity le) ? le.getHealth() : -1f;
+                    boolean tookDamage = killStartHealth >= 0f && currentHealth >= 0f && currentHealth + 0.01f < killStartHealth;
+                    boolean gotCloser = killBestDistanceSq + 0.09 < killStartDistanceSq;
+                    if (!reachable && now - stateStartMs >= CLOSE_REACH_TIMEOUT_MS && !tookDamage && !gotCloser) {
+                        killTarget      = null;
+                        firstOnTargetMs = -1L;
+                        fishState       = FishState.RETURNING_LOOK;
+                        stateStartMs    = now;
+                        client.options.forwardKey.setPressed(false);
+                        break;
+                    }
+                    // Move toward entity if closeMovement is enabled, otherwise just wait
+                    if (!reachable) {
+                        if (closeMovement) {
+                            client.options.forwardKey.setPressed(true);
+                        } else {
+                            client.options.forwardKey.setPressed(false);
+                        }
+                        break;
+                    } else {
+                        client.options.forwardKey.setPressed(false);
+                    }
+                }
 
                 // Periodically re-randomize aim point within bounding box
                 if (killAimPoint == null || now - killAimRefreshMs > killAimRefreshInterval) {
@@ -277,23 +417,62 @@ public class AutoFishingManager {
                     killAimRefreshMs       = now;
                 }
 
-                // Smooth aim towards randomised point
-                smoothAimAt(player, killAimPoint);
+                // Smooth aim towards randomised point using shared SmoothAim implementation.
+                var sa = MacroModClient.getSmoothAim();
+                if (sa == null) break;
+                sa.setTarget(killAimPoint);
 
-                // Attack on interval with jitter for human-like tempo
-                // Regenerate jitter each attack cycle to vary timing slightly
-                if (now - lastAttackMs >= attackIntervalWithJitter) {
-                    attackIntervalWithJitter = HumanReactionTime.getAttackIntervalWithJitter(ATTACK_INTERVAL_MS, 20);
+                // For both modes: only require angle check (6 degrees), don't require exact crosshair center
+                boolean lookingAtTarget = sa.isOnTarget(player, 6f);
+                if (lookingAtTarget) {
+                    if (firstOnTargetMs < 0) firstOnTargetMs = now;
+                } else {
+                    firstOnTargetMs = -1L;
+                }
+                
+                // Spam-click at 3.5 blocks range with CPS throttling
+                double distSq = killTarget.squaredDistanceTo(player);
+                double spamDistSq = SPAM_CLICK_DISTANCE * SPAM_CLICK_DISTANCE;
+                // Use fixed CPS interval (10 CPS = 100ms)
+                long spamCpsInterval = 100L;
+                
+                // Switch to attack item as soon as entity enters spam range.
+                if (attackHotbarSlot >= 0 && distSq <= spamDistSq) {
+                    player.getInventory().setSelectedSlot(attackHotbarSlot);
+                }
+                
+                if (distSq <= spamDistSq) {
+                    if (lastSpamClickMs == 0 || now - lastSpamClickMs >= spamCpsInterval) {
+                        float cooldown = player.getAttackCooldownProgress(0.0f);
+                        if (cooldown >= 0.9f) {
+                            if (attackModeDistance) {
+                                MouseInputHelper.rightClick(client);
+                            } else {
+                                MouseInputHelper.leftClick(client);
+                            }
+                            lastSpamClickMs = now;
+                        }
+                    }
+                }
+                
+                boolean dwellReady = firstOnTargetMs >= 0 && now - firstOnTargetMs >= ATTACK_DWELL_MS;
+
+                // Attack on CPS interval (+ jitter) when we're actually on target.
+                if (dwellReady && now - lastAttackMs >= attackIntervalWithJitter) {
+                    long baseInterval = 1000L / Math.max(1, getConfiguredAttackCps());
+                    attackIntervalWithJitter = HumanReactionTime.getAttackIntervalWithJitter(baseInterval, 20);
+                    if (attackHotbarSlot >= 0) {
+                        player.getInventory().setSelectedSlot(attackHotbarSlot);
+                    }
                     if (attackModeDistance) {
-                        // Distance: equip chosen item and right-click entity
-                        if (attackHotbarSlot >= 0)
-                            player.getInventory().setSelectedSlot(attackHotbarSlot);
-                        client.interactionManager.interactEntity(player, killTarget, Hand.MAIN_HAND);
+                        // Distance mode: equip chosen item and right-click if looking at target
+                        MouseInputHelper.rightClick(client);
                     } else {
-                        // Close: standard left-click attack
-                        client.interactionManager.attackEntity(player, killTarget);
+                        // Close mode: simulate a real left click
+                        MouseInputHelper.leftClick(client);
                     }
                     lastAttackMs = now;
+                    firstOnTargetMs = -1L;
                     // Re-randomize after each hit
                     killAimPoint   = randomKillAim(killTarget);
                     killAimRefreshMs = now;
@@ -303,9 +482,30 @@ public class AutoFishingManager {
             case DELAY -> {
                 // Use reaction-time-based recast delay instead of fixed
                 if (now - stateStartMs >= recastDelayMs) {
+                    // Deposit only when player inventory is fully saturated
+                    // (includes hotbar check; still deposits only non-hotbar slots).
+                    if (autoDeposit && isInventoryFullySaturated(player)) {
+                        depositPhase    = 0;
+                        depositPhaseMs  = now;
+                        depositChestPos = null;
+                        fishState       = FishState.DEPOSITING;
+                        break;
+                    }
                     // Re-equip fishing rod for next cast
                     if (!hasRodInHand(player)) equipRod(player);
                     fishState = FishState.IDLE;
+                }
+            }
+
+            case RETURNING_LOOK -> {
+                // Smoothly return camera to saved fishing crosshair, then transition to DELAY.
+                var sa = MacroModClient.getSmoothAim();
+                if (sa == null || sa.isOnTarget(player, 3f) || now - stateStartMs > 3_000L) {
+                    if (sa != null) sa.clearTarget();
+                    fishState    = FishState.DELAY;
+                    stateStartMs = now;
+                } else {
+                    sa.setTarget(directionToPoint(player.getEyePos(), fishingLookYaw, fishingLookPitch));
                 }
             }
         }
@@ -332,7 +532,7 @@ public class AutoFishingManager {
 
     /** Simulates a right-click use action with the main hand. */
     private void cast(MinecraftClient client, ClientPlayerEntity player) {
-        client.interactionManager.interactItem(player, Hand.MAIN_HAND);
+        MouseInputHelper.rightClick(client);
     }
 
     /**
@@ -352,9 +552,9 @@ public class AutoFishingManager {
     }
 
     /**
-     * Finds the nearest living entity (not the player) within
+     * Finds the nearest newly-spawned living entity (not the player) within
      * {@value PREY_SCAN_RADIUS} blocks of the last known bobber position.
-     * Used to detect entities that spawn after the catch.
+     * Only considers entities that did NOT exist when the bobber was cast.
      */
     private Entity findPreyNearPos(MinecraftClient client, ClientPlayerEntity player) {
         if (lastBobberPos == null || client.world == null) return null;
@@ -364,7 +564,15 @@ public class AutoFishingManager {
                 lastBobberPos.x + r, lastBobberPos.y + r, lastBobberPos.z + r
         );
         List<LivingEntity> near = client.world.getEntitiesByClass(
-                LivingEntity.class, box, e -> e != player && e.isAlive());
+                LivingEntity.class, box, e -> {
+                    if (e == player || !e.isAlive()) return false;
+                    if (e instanceof PlayerEntity) return false;
+                    if (e instanceof ArmorStandEntity) return false;
+                    if (e.isInvisible()) return false;
+                    // Only consider NEW entities (not in pre-cast set)
+                    if (preCastEntityUUIDs.contains(e.getUuid())) return false;
+                    return hasLineOfSight(client, player, e);
+                });
         if (near.isEmpty()) return null;
         double bx = lastBobberPos.x, by = lastBobberPos.y, bz = lastBobberPos.z;
         return near.stream()
@@ -372,6 +580,141 @@ public class AutoFishingManager {
                         a.squaredDistanceTo(bx, by, bz),
                         b.squaredDistanceTo(bx, by, bz)))
                 .orElse(null);
+    }
+
+    private int getConfiguredAttackCps() {
+        MacroExecutor executor = MacroModClient.getExecutor();
+        if (executor != null && executor.getCurrentMacro() != null && executor.getCurrentMacro().getConfig() != null) {
+            return executor.getCurrentMacro().getConfig().getAttackCPS();
+        }
+        return DEFAULT_ATTACK_CPS;
+    }
+
+    private static boolean isLookingAt(ClientPlayerEntity player, Vec3d target, float toleranceDeg) {
+        Vec3d eyes = player.getEyePos();
+        Vec3d toTarget = target.subtract(eyes);
+        if (toTarget.lengthSquared() < 1.0E-8) return true;
+        Vec3d dir = toTarget.normalize();
+
+        float targetYaw = (float) Math.toDegrees(Math.atan2(-dir.x, dir.z));
+        float targetPitch = (float) Math.toDegrees(-Math.asin(Math.max(-1.0, Math.min(1.0, dir.y))));
+        float dyaw = Math.abs(wrapDeg(targetYaw - player.getYaw()));
+        float dpitch = Math.abs(targetPitch - player.getPitch());
+
+        return dyaw <= toleranceDeg && dpitch <= toleranceDeg;
+    }
+
+    // ── Auto Deposit ──────────────────────────────────────────────────────────
+
+    /**
+     * Drives the deposit sub-state machine. Called when fishState == DEPOSITING,
+     * BEFORE the currentScreen null-guard in tick(), so the chest screen stays open.
+     */
+    private void tickDeposit(MinecraftClient client, ClientPlayerEntity player, long now) {
+        switch (depositPhase) {
+            case 0 -> {
+                // Find the nearest chest and try to open it
+                depositChestPos = findNearestChest(client, player);
+                if (depositChestPos == null) {
+                    fishState    = FishState.DELAY;
+                    stateStartMs = now;
+                    return;
+                }
+                var sa = MacroModClient.getSmoothAim();
+                if (sa == null) {
+                    fishState    = FishState.DELAY;
+                    stateStartMs = now;
+                    return;
+                }
+                sa.setTarget(Vec3d.ofCenter(depositChestPos));
+                if (!sa.isOnTarget(player, 6f)) {
+                    if (now - depositPhaseMs > DEPOSIT_OPEN_WAIT_MS) {
+                        depositPhase = 0;
+                        fishState    = FishState.DELAY;
+                        stateStartMs = now;
+                    }
+                    return;
+                }
+                if (!MouseInputHelper.isCrosshairOnBlock(client, depositChestPos)) {
+                    if (now - depositPhaseMs > DEPOSIT_OPEN_WAIT_MS) {
+                        depositPhase = 0;
+                        fishState    = FishState.DELAY;
+                        stateStartMs = now;
+                    }
+                    return;
+                }
+                MouseInputHelper.rightClick(client);
+                depositPhase   = 1;
+                depositPhaseMs = now;
+            }
+            case 1 -> {
+                // Wait for chest screen and shift-click all non-hotbar items into it
+                if (client.currentScreen instanceof HandledScreen<?> hs) {
+                    var handler = hs.getScreenHandler();
+                    int containerSize = handler.slots.size() - 36;
+                    int invStart = containerSize;
+                    int invEnd   = containerSize + 27;
+                    for (int slot = invStart; slot < invEnd; slot++) {
+                        if (!handler.getSlot(slot).getStack().isEmpty()) {
+                            client.interactionManager.clickSlot(
+                                    handler.syncId, slot, 0, SlotActionType.QUICK_MOVE, player);
+                        }
+                    }
+                    depositPhase   = 2;
+                    depositPhaseMs = now;
+                } else if (now - depositPhaseMs > DEPOSIT_OPEN_WAIT_MS) {
+                    depositPhase = 0;
+                    fishState    = FishState.DELAY;
+                    stateStartMs = now;
+                }
+            }
+            case 2 -> {
+                if (client.currentScreen != null) client.currentScreen.close();
+                depositPhase = 0;
+                var saDep = MacroModClient.getSmoothAim();
+                if (saDep != null) {
+                    saDep.setTarget(directionToPoint(player.getEyePos(), fishingLookYaw, fishingLookPitch));
+                    fishState = FishState.RETURNING_LOOK;
+                } else {
+                    fishState = FishState.DELAY;
+                }
+                stateStartMs = now;
+            }
+        }
+    }
+
+    /** Scans around the player for the nearest chest block entity within {@value DEPOSIT_SCAN_RADIUS} blocks. */
+    private BlockPos findNearestChest(MinecraftClient client, ClientPlayerEntity player) {
+        if (client.world == null) return null;
+        BlockPos origin = player.getBlockPos();
+        BlockPos best   = null;
+        double bestDist = Double.MAX_VALUE;
+        int r = DEPOSIT_SCAN_RADIUS;
+        for (int dx = -r; dx <= r; dx++) {
+            for (int ddy = -2; ddy <= 4; ddy++) {
+                for (int dz = -r; dz <= r; dz++) {
+                    BlockPos pos = origin.add(dx, ddy, dz);
+                    if (client.world.getBlockEntity(pos) instanceof ChestBlockEntity) {
+                        double d = dx * dx + (double) ddy * ddy + dz * dz;
+                        if (d < bestDist) { bestDist = d; best = pos; }
+                    }
+                }
+            }
+        }
+        return best;
+    }
+
+    /**
+     * Returns true when all player inventory slots (0..35, including hotbar)
+     * are occupied by full stacks, meaning the player cannot pick up more items.
+     */
+    private static boolean isInventoryFullySaturated(ClientPlayerEntity player) {
+        for (int i = 0; i < 36; i++) {
+            var stack = player.getInventory().getStack(i);
+            if (stack.isEmpty()) return false;
+            if (stack.getCount() < stack.getMaxCount()) return false;
+        }
+        return true;
     }
 
     /** Raycasts from player eyes to the target's centre; true if unobstructed. */
@@ -388,6 +731,61 @@ public class AutoFishingManager {
         return client.world.raycast(ctx).getType() == HitResult.Type.MISS;
     }
 
+    /**
+     * FOV-based entity detection: Finds entities in a 4x4 rectangular zone in front of player.
+     * 
+     * Concept: Create a box extending forward from the player's eye position along their look direction.
+     * The box expands sideways and vertically to create a "viewing frustum".
+     * 
+     * Parameters:
+     * - forwardDistance: How far ahead to search (in blocks)
+     * - width: Horizontal FOV width (4 blocks = ~53 degrees at ~4 blocks distance)
+     * - height: Vertical FOV height (4 blocks)
+     * 
+     * Example usage:
+     * {@code
+     * List<Entity> entitiesInFOV = client.world.getOtherEntities(player,
+     *     createFOVBox(player.getEyePos(), player.getYaw(), player.getPitch(), 5.0, 4.0, 4.0),
+     *     e -> e instanceof LivingEntity && !(e instanceof PlayerEntity)
+     * );
+     * }
+     */
+    @SuppressWarnings("unused")
+    private static Box createFOVBox(Vec3d eyePos, float yaw, float pitch, double forwardDistance, double width, double height) {
+        // Convert yaw/pitch to forward direction vector
+        float yawRad = (float) Math.toRadians(yaw);
+        float pitchRad = (float) Math.toRadians(pitch);
+        
+        double forwardX = -Math.sin(yawRad) * Math.cos(pitchRad);
+        double forwardY = -Math.sin(pitchRad);
+        double forwardZ = Math.cos(yawRad) * Math.cos(pitchRad);
+        
+        // Right vector (perpendicular to forward in horizontal plane)
+        double rightX = -Math.cos(yawRad);
+        double rightZ = -Math.sin(yawRad);
+        
+        // Up vector (perpendicular to forward in vertical plane)
+        double upX = Math.sin(yawRad) * Math.sin(pitchRad);
+        double upY = Math.cos(pitchRad);
+        double upZ = -Math.cos(yawRad) * Math.sin(pitchRad);
+        
+        // Front face center (along look direction)
+        Vec3d front = eyePos.add(forwardX * forwardDistance, forwardY * forwardDistance, forwardZ * forwardDistance);
+        
+        // Expand box from front center by half-width and half-height in each direction
+        double halfWidth = width / 2.0;
+        double halfHeight = height / 2.0;
+        
+        double minX = front.x - halfWidth * Math.abs(rightX) - halfHeight * Math.abs(upX);
+        double maxX = front.x + halfWidth * Math.abs(rightX) + halfHeight * Math.abs(upX);
+        double minY = front.y - halfHeight;
+        double maxY = front.y + halfHeight;
+        double minZ = front.z - halfWidth * Math.abs(rightZ) - halfHeight * Math.abs(upZ);
+        double maxZ = front.z + halfWidth * Math.abs(rightZ) + halfHeight * Math.abs(upZ);
+        
+        return new Box(minX, minY, minZ, maxX, maxY, maxZ);
+    }
+
     /** Returns a random point within the entity's bounding box (body zone, avoids feet/head). */
     private static Vec3d randomKillAim(Entity e) {
         net.minecraft.util.math.Box box = e.getBoundingBox();
@@ -399,48 +797,22 @@ public class AutoFishingManager {
         return new Vec3d(x, y, z);
     }
 
-    /** Smoothly rotates the player towards a world position by at most {@value AIM_STEP_DEG}°/tick. */
-    private void smoothAimAt(ClientPlayerEntity player, Vec3d aimPos) {
-        Vec3d eyes   = player.getEyePos();
-        Vec3d delta  = aimPos.subtract(eyes).normalize();
-
-        float targetYaw   = (float) Math.toDegrees(Math.atan2(-delta.x, delta.z));
-        float targetPitch = (float) Math.toDegrees(
-                -Math.asin(Math.max(-1.0, Math.min(1.0, delta.y))));
-
-        float dyaw   = wrapDeg(targetYaw   - player.getYaw());
-        float dpitch = targetPitch - player.getPitch();
-
-        player.setYaw(player.getYaw()
-                + Math.signum(dyaw)   * Math.min(AIM_STEP_DEG, Math.abs(dyaw)));
-        player.setPitch(player.getPitch()
-                + Math.signum(dpitch) * Math.min(AIM_STEP_DEG, Math.abs(dpitch)));
-    }
-
-    /** Smoothly rotates the player towards {@code target} entity by at most {@value AIM_STEP_DEG}°/tick. */
-    private void smoothAimAt(ClientPlayerEntity player, Entity target) {
-        Vec3d eyes   = player.getEyePos();
-        Vec3d centre = new Vec3d(target.getX(), target.getY() + target.getHeight() * 0.5, target.getZ());
-        Vec3d delta  = centre.subtract(eyes).normalize();
-
-        float targetYaw   = (float) Math.toDegrees(Math.atan2(-delta.x, delta.z));
-        float targetPitch = (float) Math.toDegrees(
-                -Math.asin(Math.max(-1.0, Math.min(1.0, delta.y))));
-
-        float dyaw   = wrapDeg(targetYaw   - player.getYaw());
-        float dpitch = targetPitch - player.getPitch();
-
-        player.setYaw(player.getYaw()
-                + Math.signum(dyaw)   * Math.min(AIM_STEP_DEG, Math.abs(dyaw)));
-        player.setPitch(player.getPitch()
-                + Math.signum(dpitch) * Math.min(AIM_STEP_DEG, Math.abs(dpitch)));
-    }
-
     private void sendMessage(String key, Formatting color, Object... args) {
         MinecraftClient client = MinecraftClient.getInstance();
         if (client.player != null) {
             client.player.sendMessage(Text.translatable(key, args).formatted(color), false);
         }
+    }
+
+    /** Converts Minecraft yaw+pitch to a world-space point 100 blocks in that direction. */
+    private static Vec3d directionToPoint(Vec3d eye, float yaw, float pitch) {
+        double yr   = Math.toRadians(yaw);
+        double pr   = Math.toRadians(pitch);
+        double cosP = Math.cos(pr);
+        double dx   = -Math.sin(yr) * cosP;
+        double dy   = -Math.sin(pr);
+        double dz   =  Math.cos(yr) * cosP;
+        return eye.add(dx * 100.0, dy * 100.0, dz * 100.0);
     }
 
     private static float wrapDeg(float d) {

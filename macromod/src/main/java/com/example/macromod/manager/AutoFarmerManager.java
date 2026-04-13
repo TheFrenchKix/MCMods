@@ -1,5 +1,6 @@
 package com.example.macromod.manager;
 
+import com.example.macromod.util.MouseInputHelper;
 import net.fabricmc.api.EnvType;
 import net.fabricmc.api.Environment;
 import net.minecraft.client.MinecraftClient;
@@ -94,8 +95,8 @@ public class AutoFarmerManager {
 
         ClientPlayerEntity player = client.player;
 
-        // Always hold attack (left click)
-        client.options.attackKey.setPressed(true);
+        // Continuously drive block breaking through the left-click pipeline.
+        MouseInputHelper.continueLeftClick(client);
 
         switch (phase) {
 

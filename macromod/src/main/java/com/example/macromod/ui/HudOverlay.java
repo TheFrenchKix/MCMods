@@ -17,6 +17,7 @@ import net.minecraft.client.gui.DrawContext;
 import net.minecraft.client.render.RenderTickCounter;
 import net.minecraft.text.Text;
 import net.minecraft.util.Formatting;
+import java.util.List;
 
 /**
  * Renders HUD overlay showing macro execution and recording status.
@@ -40,31 +41,38 @@ public class HudOverlay {
         MinecraftClient client = MinecraftClient.getInstance();
         if (client.player == null) return;
 
+        TextRenderer textRenderer = client.textRenderer;
+        AutoAttackManager aam = AutoAttackManager.getInstance();
+        AutoFishingManager afm = AutoFishingManager.getInstance();
+        boolean autoAttackActive = aam != null && aam.isEnabled();
+        boolean autoFishActive = afm != null && afm.isEnabled();
+
+        int x = PADDING + 2;
+        int y = PADDING + 2;
+
+        // Modules HUD (Auto Attack / Auto Fish) — always rendered when active,
+        // independent of isHudVisible config and executor/recorder state.
+        if (autoAttackActive || autoFishActive) {
+            renderModulesHud(context, textRenderer, aam, afm, x, y);
+            int moduleLines = (autoAttackActive ? 1 : 0) + (autoFishActive ? 1 : 0);
+            y += moduleLines * LINE_HEIGHT + PADDING * 2 + 4; // gap below
+        }
+
+        // Executor / recorder HUD — gated by isHudVisible config
         var cfgMgr = MacroModClient.getConfigManager();
         if (cfgMgr == null || !cfgMgr.getConfig().isHudVisible()) return;
 
         MacroExecutor executor = MacroModClient.getExecutor();
         MacroRecorder recorder = MacroModClient.getRecorder();
-        AutoAttackManager aam = AutoAttackManager.getInstance();
-        AutoFishingManager afm = AutoFishingManager.getInstance();
-
         boolean executorActive = executor != null && (executor.isRunning() || executor.getState() == MacroState.PAUSED);
         boolean recorderActive = recorder != null && recorder.getState() != RecordingState.IDLE;
-        boolean autoAttackActive = aam != null && aam.isEnabled();
-        boolean autoFishActive = afm != null && afm.isEnabled();
 
-        if (!executorActive && !recorderActive && !autoAttackActive && !autoFishActive) return;
-
-        TextRenderer textRenderer = client.textRenderer;
-        int x = PADDING + 2;
-        int y = PADDING + 2;
+        if (!executorActive && !recorderActive) return;
 
         if (recorderActive) {
             renderRecordingHud(context, textRenderer, recorder, x, y);
-        } else if (executorActive) {
-            renderExecutionHud(context, textRenderer, executor, x, y);
         } else {
-            renderModulesHud(context, textRenderer, aam, afm, x, y);
+            renderExecutionHud(context, textRenderer, executor, x, y);
         }
     }
 
@@ -177,25 +185,36 @@ public class HudOverlay {
 
     private void renderModulesHud(DrawContext context, TextRenderer textRenderer,
                                     AutoAttackManager aam, AutoFishingManager afm, int x, int y) {
-        int width = BAR_WIDTH + PADDING * 4;
-        int height = LINE_HEIGHT * 2 + PADDING * 2;
-        context.fill(x - PADDING, y - PADDING, x + width, y + height, BG_COLOR);
-
+        // Build lines dynamically (only active modules)
+        List<String> lines = new java.util.ArrayList<>();
         if (aam != null && aam.isEnabled()) {
             String targetName = aam.getCurrentTarget() != null
                     ? aam.getCurrentTarget().getName().getString()
                     : "scanning...";
-            context.drawTextWithShadow(textRenderer,
-                    Text.literal("⚔ Auto Attack: " + targetName).formatted(Formatting.RED),
-                    x, y, 0xFFFFFF);
-            y += LINE_HEIGHT;
+            lines.add("[ATK] Auto Attack: " + targetName);
         }
-
         if (afm != null && afm.isEnabled()) {
-            context.drawTextWithShadow(textRenderer,
-                    Text.literal("🎣 Auto Fish").formatted(Formatting.AQUA),
-                    x, y, 0xFFFFFF);
-            y += LINE_HEIGHT;
+            lines.add("[FISH] Auto Fish");
+        }
+        if (lines.isEmpty()) return;
+
+        // Measure max text width to size background dynamically
+        int maxWidth = 0;
+        for (String line : lines) {
+            int w = textRenderer.getWidth(line);
+            if (w > maxWidth) maxWidth = w;
+        }
+        int contentWidth  = maxWidth + PADDING * 2;
+        int contentHeight = lines.size() * LINE_HEIGHT + PADDING * 2;
+
+        // Background
+        context.fill(x - PADDING, y - PADDING, x - PADDING + contentWidth, y - PADDING + contentHeight, BG_COLOR);
+
+        // Lines
+        int lineY = y;
+        for (String line : lines) {
+            context.drawTextWithShadow(textRenderer, Text.literal(line), x, lineY, 0xFF55FF55);
+            lineY += LINE_HEIGHT;
         }
     }
 
