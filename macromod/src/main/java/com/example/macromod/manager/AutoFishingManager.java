@@ -28,6 +28,7 @@ import java.util.List;
 import java.util.Random;
 import java.util.HashSet;
 import java.util.Set;
+import java.util.UUID;
 
 /**
  * Standalone auto-fishing state machine, driven by the client tick event.
@@ -98,7 +99,11 @@ public class AutoFishingManager {
     private long      stateStartMs = 0L;
     private double    lastBobberY  = Double.NaN;
     private boolean   enabled      = false;
-    private Vec3d     lastBobberPos = null;    private Set<java.util.UUID> preCastEntityUUIDs = new HashSet<>();
+    private Vec3d     lastBobberPos = null;
+    /** UUIDs of entities within 5 blocks of the bobber just before reel-in (bite moment). */
+    private final Set<java.util.UUID> preBiteEntityUUIDs = new HashSet<>();
+    /** UUIDs of entities near bobber when it first appeared (pre-cast baseline). */
+    private final Set<java.util.UUID> preCastEntityUUIDs = new HashSet<>();
     // ── Attack config (set from AutoFarmScreen) ───────────────────────
     private boolean attackEnabled      = false;
     private boolean attackModeDistance = false;   // false = close, true = distance
@@ -117,6 +122,9 @@ public class AutoFishingManager {
     private double killStartDistanceSq        = -1.0;
     private double killBestDistanceSq         = Double.MAX_VALUE;
     private float  killStartHealth            = -1f;
+    private UUID   killTargetUUID             = null;  // stable UUID for kill target re-resolution
+    // ── Teleport detection ──────────────────────────────────────────────────
+    private Vec3d  prevTickPos                = null;  // position last tick for teleport detection
     // ── Saved crosshair for post-action camera return ─────────────────────
     private float  fishingLookYaw             = 0f;
     private float  fishingLookPitch           = 0f;
@@ -148,8 +156,11 @@ public class AutoFishingManager {
         if (!enabled) {
             fishState    = FishState.IDLE;
             killTarget   = null;
+            killTargetUUID = null;
             depositPhase = 0;
+            prevTickPos  = null;
             preCastEntityUUIDs.clear();
+            preBiteEntityUUIDs.clear();
             // Clear any ongoing SmoothAim target set by jitter or other aiming
             var sa = MacroModClient.getSmoothAim();
             if (sa != null) sa.clearTarget();
@@ -196,6 +207,16 @@ public class AutoFishingManager {
             setDisable();
             return;
         }
+
+        // Teleport detection: a sudden position jump > 10 blocks in one tick means the server
+        // teleported the player (anti-cheat correction, death, etc.). Disable immediately.
+        Vec3d currentTickPos = new Vec3d(player.getX(), player.getY(), player.getZ());
+        if (prevTickPos != null && currentTickPos.squaredDistanceTo(prevTickPos) > 100.0) {
+            player.sendMessage(Text.literal("Auto Fishing disabled: teleported away from start.").formatted(Formatting.RED), false);
+            setDisable();
+            return;
+        }
+        prevTickPos = currentTickPos;
 
         // Handle deposit state before the GUI screen check (chest screen must remain open)
         if (fishState == FishState.DEPOSITING) {
@@ -277,9 +298,9 @@ public class AutoFishingManager {
                 double currentY = bobber.getY();
                 lastBobberPos   = new Vec3d(bobber.getX(), bobber.getY(), bobber.getZ());
 
-                // Signal 1: position dip (bobber pulled down by fish)
+                // Signal 1: position dip (bobber pulled down by fish — water OR lava)
                 if (!Double.isNaN(lastBobberY)
-                        && bobber.isTouchingWater()
+                        && (bobber.isTouchingWater() || bobber.isInLava())
                         && (now - stateStartMs) >= MIN_WAIT_MS
                         && (lastBobberY - currentY) >= BITE_DIP_THRESHOLD) {
                     bite = true;
@@ -292,9 +313,22 @@ public class AutoFishingManager {
                     bite = true;
                 }
 
-                if (bite) {
-                                        fishingLookYaw   = player.getYaw();
-                                        fishingLookPitch = player.getPitch();
+                        if (bite) {
+                    fishingLookYaw   = player.getYaw();
+                    fishingLookPitch = player.getPitch();
+                    // Snapshot all entities in 5-block radius around bobber at the bite moment.
+                    // Any entity appearing AFTER this snapshot is considered prey.
+                    preBiteEntityUUIDs.clear();
+                    if (client.world != null) {
+                        double br = 5.0;
+                        Box biteBox = new Box(
+                                bobber.getX() - br, bobber.getY() - br, bobber.getZ() - br,
+                                bobber.getX() + br, bobber.getY() + br, bobber.getZ() + br);
+                        for (LivingEntity e : client.world.getEntitiesByClass(
+                                LivingEntity.class, biteBox, le -> le != player)) {
+                            preBiteEntityUUIDs.add(e.getUuid());
+                        }
+                    }
                     cast(client, player);   // right-click again = reel in
                     fishState    = FishState.REELING;
                     stateStartMs = now;
@@ -332,6 +366,7 @@ public class AutoFishingManager {
                 Entity prey = findPreyNearPos(client, player);
                 if (prey != null) {
                     killTarget           = prey;
+                    killTargetUUID       = prey.getUuid();  // track UUID for stable re-resolution
                     noLosCount           = 0;
                     lastAttackMs         = 0L;
                     firstOnTargetMs      = -1L;
@@ -341,20 +376,32 @@ public class AutoFishingManager {
                     killAimPoint         = randomKillAim(prey);
                     killAimRefreshInterval = 600L + AIM_RAND.nextInt(600);
                     killAimRefreshMs     = now;
-                    if (attackHotbarSlot >= 0) {
-                        player.getInventory().setSelectedSlot(attackHotbarSlot);
-                    }
+                    // Do NOT switch slot here — only switch when entity enters SPAM_CLICK_DISTANCE
                     fishState            = FishState.KILLING;
                     stateStartMs         = now;
                 }
             }
 
             case KILLING -> {
+                // Re-resolve kill target by UUID if the entity reference went stale
+                // (e.g. chunk reload, entity re-spawn, or reference GC'd)
+                if ((killTarget == null || !killTarget.isAlive()) && killTargetUUID != null && client.world != null) {
+                    double sr = PREY_SCAN_RADIUS * 2.0;
+                    Vec3d sp = lastBobberPos != null ? lastBobberPos : new Vec3d(player.getX(), player.getY(), player.getZ());
+                    Box searchBox = new Box(sp.x - sr, sp.y - sr, sp.z - sr,
+                                           sp.x + sr, sp.y + sr, sp.z + sr);
+                    UUID targetUuid = killTargetUUID;
+                    killTarget = client.world.getOtherEntities(null, searchBox,
+                        e -> targetUuid.equals(e.getUuid()) && e.isAlive())
+                        .stream().findFirst().orElse(null);
+                }
+
                 // Target dead or gone?
                 if (killTarget == null || !killTarget.isAlive()) {
-                    killTarget   = null;
-                    fishState    = FishState.RETURNING_LOOK;
-                    stateStartMs = now;
+                    killTarget     = null;
+                    killTargetUUID = null;
+                    fishState      = FishState.RETURNING_LOOK;
+                    stateStartMs   = now;
                     break;
                 }
 
@@ -380,7 +427,6 @@ public class AutoFishingManager {
                 noLosCount = 0;
 
                 // Close mode: wait until target is really reachable in 3D (< 3 blocks).
-                // If after 10s it never got closer and never lost health, skip and fish again.
                 if (!attackModeDistance) {
                     double distSq = killTarget.squaredDistanceTo(player);
                     if (distSq < killBestDistanceSq) killBestDistanceSq = distSq;
@@ -389,22 +435,26 @@ public class AutoFishingManager {
                     float currentHealth = (killTarget instanceof LivingEntity le) ? le.getHealth() : -1f;
                     boolean tookDamage = killStartHealth >= 0f && currentHealth >= 0f && currentHealth + 0.01f < killStartHealth;
                     boolean gotCloser = killBestDistanceSq + 0.09 < killStartDistanceSq;
-                    if (!reachable && now - stateStartMs >= CLOSE_REACH_TIMEOUT_MS && !tookDamage && !gotCloser) {
-                        killTarget      = null;
-                        firstOnTargetMs = -1L;
-                        fishState       = FishState.RETURNING_LOOK;
-                        stateStartMs    = now;
-                        client.options.forwardKey.setPressed(false);
-                        break;
-                    }
-                    // Move toward entity if closeMovement is enabled, otherwise just wait
+
                     if (!reachable) {
                         if (closeMovement) {
+                            // Movement enabled: timeout if entity shows no progress after 10s
+                            if (now - stateStartMs >= CLOSE_REACH_TIMEOUT_MS && !tookDamage && !gotCloser) {
+                                killTarget      = null;
+                                killTargetUUID  = null;
+                                firstOnTargetMs = -1L;
+                                fishState       = FishState.RETURNING_LOOK;
+                                stateStartMs    = now;
+                                client.options.forwardKey.setPressed(false);
+                                break;
+                            }
                             client.options.forwardKey.setPressed(true);
                         } else {
+                            // Movement disabled: wait indefinitely for entity to walk within reach.
+                            // Monitor UUID + health each tick so we don't miss a re-spawn.
                             client.options.forwardKey.setPressed(false);
                         }
-                        break;
+                        break;  // Not reachable yet — come back next tick
                     } else {
                         client.options.forwardKey.setPressed(false);
                     }
@@ -563,14 +613,17 @@ public class AutoFishingManager {
                 lastBobberPos.x - r, lastBobberPos.y - r, lastBobberPos.z - r,
                 lastBobberPos.x + r, lastBobberPos.y + r, lastBobberPos.z + r
         );
+        // Use preBiteEntityUUIDs if available (more precise: entities that appeared
+        // AFTER the bite moment). Fall back to preCastEntityUUIDs for older casts.
+        Set<java.util.UUID> baseline = !preBiteEntityUUIDs.isEmpty() ? preBiteEntityUUIDs : preCastEntityUUIDs;
         List<LivingEntity> near = client.world.getEntitiesByClass(
                 LivingEntity.class, box, e -> {
                     if (e == player || !e.isAlive()) return false;
                     if (e instanceof PlayerEntity) return false;
                     if (e instanceof ArmorStandEntity) return false;
                     if (e.isInvisible()) return false;
-                    // Only consider NEW entities (not in pre-cast set)
-                    if (preCastEntityUUIDs.contains(e.getUuid())) return false;
+                    // Only consider NEW entities (not present at bite moment)
+                    if (baseline.contains(e.getUuid())) return false;
                     return hasLineOfSight(client, player, e);
                 });
         if (near.isEmpty()) return null;

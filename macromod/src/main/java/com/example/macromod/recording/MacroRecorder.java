@@ -151,12 +151,17 @@ public class MacroRecorder {
             return;
         }
 
-        MacroModClient.getManager().save(currentMacro);
         String name = currentMacro.getName();
         int steps = currentMacro.getSteps().size();
-
-        sendMessage("macromod.chat.recording_stopped", Formatting.GREEN, name, steps);
-        LOGGER.info("Stopped recording macro '{}' with {} steps", name, steps);
+        
+        if (steps == 0) {
+            sendMessage("macromod.chat.recording_stopped", Formatting.YELLOW, name, "no");
+            LOGGER.info("Stopped recording macro '{}' with no steps", name);
+        } else {
+            sendMessage("macromod.chat.recording_stopped", Formatting.GREEN, name, steps);
+            LOGGER.info("Stopped recording macro '{}' with {} steps", name, steps);
+            MacroModClient.getManager().save(currentMacro);
+        }
 
         resetState();
     }

@@ -95,6 +95,16 @@ public class MacroConfig {
         this.attackCPS = Math.max(1, Math.min(20, attackCPS));
     }
 
+    private boolean randomAttackCps = false;
+
+    public boolean isRandomAttackCps() {
+        return randomAttackCps;
+    }
+
+    public void setRandomAttackCps(boolean v) {
+        this.randomAttackCps = v;
+    }
+
     public int getMiningDelay() {
         return miningDelay;
     }
@@ -191,6 +201,7 @@ public class MacroConfig {
         copy.attackWhitelist = new ArrayList<>(attackWhitelist);
         copy.attackRange = attackRange;
         copy.attackCPS = attackCPS;
+        copy.randomAttackCps = randomAttackCps;
         copy.onlyGround = onlyGround;
         copy.lockCrosshair = lockCrosshair;
         copy.macroType = macroType;

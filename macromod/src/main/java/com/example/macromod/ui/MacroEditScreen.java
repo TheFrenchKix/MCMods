@@ -12,9 +12,9 @@ import com.example.macromod.ui.easyblock.ToggleRenderer;
 import net.fabricmc.api.EnvType;
 import net.fabricmc.api.Environment;
 import net.minecraft.client.MinecraftClient;
+import net.minecraft.client.gui.Click;
 import net.minecraft.client.gui.DrawContext;
 import net.minecraft.client.gui.screen.Screen;
-import net.minecraft.client.gui.Click;
 import net.minecraft.client.gui.widget.TextFieldWidget;
 import net.minecraft.client.input.KeyInput;
 import net.minecraft.entity.LivingEntity;
@@ -60,6 +60,7 @@ public class MacroEditScreen extends BasePopupScreen {
     private final Macro macro;
     private String  editName, editDesc;
     private boolean editLoop, editSkipMismatch, editAttackDanger, editOnlyGround, editLockCam;
+    private boolean editRandomAttackCps;
     private int     editAttackCPS, editMiningDelay, editMoveTimeout;
     private float   editArrivalRadius;
     private boolean editAttackEnabled, editAttackWlOnly;
@@ -67,7 +68,7 @@ public class MacroEditScreen extends BasePopupScreen {
     private int     editAttackRange;
 
     // ── Toggle animations ─────────────────────────────────────────────
-    private final float[] tgAnim = new float[7];
+    private final float[] tgAnim = new float[8];
 
     // ── Left panel scroll ─────────────────────────────────────────────
     private int leftScroll    = 0;
@@ -82,7 +83,7 @@ public class MacroEditScreen extends BasePopupScreen {
     private int stepScroll = 0, selStep = -1;
 
     // ── Hit-area caches (set during render, read during click) ────────
-    private final int[][] tgBounds  = new int[7][4];  // [idx][x,y,w,h], w<0 = inactive
+    private final int[][] tgBounds  = new int[8][4];  // [idx][x,y,w,h], w<0 = inactive
     private final int[][] cycBounds = new int[4][4];  // [idx][lbx,rbx,y, active?]
     private int atkRngLbx = -1, atkRngRbx = -1, atkRngY = -1;
     private int stepBtnY;
@@ -117,11 +118,12 @@ public class MacroEditScreen extends BasePopupScreen {
         editArrivalRadius = c.getArrivalRadius();
         editAttackEnabled = c.isAttackEnabled();
         editAttackWlOnly  = c.isAttackWhitelistOnly();
+        editRandomAttackCps = c.isRandomAttackCps();
         editAttackWl.addAll(c.getAttackWhitelist());
         editAttackRange   = c.getAttackRange();
         boolean[] v = {editLoop, editSkipMismatch, editAttackDanger, editOnlyGround,
-                editLockCam, editAttackEnabled, editAttackWlOnly};
-        for (int i = 0; i < 7; i++) tgAnim[i] = v[i] ? 1f : 0f;
+                editLockCam, editAttackEnabled, editAttackWlOnly, editRandomAttackCps};
+        for (int i = 0; i < 8; i++) tgAnim[i] = v[i] ? 1f : 0f;
     }
 
     // ═════════════════════════════════════════════════════════════════
@@ -164,8 +166,8 @@ public class MacroEditScreen extends BasePopupScreen {
     protected void drawScreen(DrawContext ctx, int mx, int my, float delta) {
         // Animate toggles per-frame
         boolean[] vals = {editLoop, editSkipMismatch, editAttackDanger, editOnlyGround,
-                editLockCam, editAttackEnabled, editAttackWlOnly};
-        for (int i = 0; i < 7; i++) tgAnim[i] = Anim.smooth(tgAnim[i], vals[i] ? 1f : 0f, 20f);
+                editLockCam, editAttackEnabled, editAttackWlOnly, editRandomAttackCps};
+        for (int i = 0; i < 8; i++) tgAnim[i] = Anim.smooth(tgAnim[i], vals[i] ? 1f : 0f, 20f);
 
         // Reset hit caches
         for (int[] b : tgBounds)  b[2] = -1;
@@ -257,6 +259,7 @@ public class MacroEditScreen extends BasePopupScreen {
         if (editAttackEnabled) {
             if (editAttackDanger) {
                 sy = cycler(ctx, mx, my, x, re, sy, "Attack CPS", editAttackCPS + " CPS", 3) + ROW_GAP;
+                sy = toggle(ctx, mx, my, x, re, sy, "Random CPS (7\u201311)", tgAnim[7], 7) + ROW_GAP;
             }
             sy = toggle(ctx, mx, my, x, re, sy, "Whitelist only", tgAnim[6], 6) + ROW_GAP;
 
@@ -510,7 +513,7 @@ public class MacroEditScreen extends BasePopupScreen {
         }
 
         // Toggles
-        for (int i = 0; i < 7; i++) {
+        for (int i = 0; i < 8; i++) {
             int[] b = tgBounds[i];
             if (b[2] > 0 && hit(imx, imy, b[0], b[1], b[2], b[3])) {
                 switch (i) {
@@ -521,6 +524,7 @@ public class MacroEditScreen extends BasePopupScreen {
                     case 4 -> editLockCam = !editLockCam;
                     case 5 -> editAttackEnabled = !editAttackEnabled;
                     case 6 -> editAttackWlOnly = !editAttackWlOnly;
+                    case 7 -> editRandomAttackCps = !editRandomAttackCps;
                 }
                 return true;
             }
@@ -658,6 +662,7 @@ public class MacroEditScreen extends BasePopupScreen {
         MacroConfig c = macro.getConfig();
         c.setLoop(editLoop);               c.setSkipMismatch(editSkipMismatch);
         c.setAttackDanger(editAttackDanger); c.setAttackCPS(editAttackCPS);
+        c.setRandomAttackCps(editRandomAttackCps);
         c.setOnlyGround(editOnlyGround);   c.setLockCrosshair(editLockCam);
         c.setMiningDelay(editMiningDelay);  c.setMoveTimeout(editMoveTimeout);
         c.setArrivalRadius(editArrivalRadius); c.setAttackEnabled(editAttackEnabled);

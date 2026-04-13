@@ -37,7 +37,7 @@ public class MovementHelper {
     private static final double WAYPOINT_ARRIVE_DY        = 0.5;
 
     // ── Jump / stuck detection ───────────────────────────────────
-    private static final long   STUCK_JUMP_MS             = 550L;
+    private static final long   STUCK_JUMP_MS             = 300L;
     private static final double STUCK_PROGRESS_THRESHOLD  = 0.01;
 
     private Vec3d lastStuckPos  = null;

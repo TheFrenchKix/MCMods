@@ -19,6 +19,7 @@ import org.slf4j.LoggerFactory;
 
 import java.util.Comparator;
 import java.util.List;
+import java.util.Random;
 
 /**
  * Stable single-target auto-attack system.
@@ -94,6 +95,12 @@ public class AutoAttackManager {
     // ── Settings (configurable from GUI) ─────────────────────────────
     private float attackRange = 5.0f;
     private PriorityMode priorityMode = PriorityMode.NEAREST;
+    /** Hotbar slot to equip before attacking (-1 = don't switch). */
+    private int attackItemSlot = -1;
+    /** When true, randomise CPS between 7 and 11 each click interval. */
+    private boolean randomCps = false;
+
+    private static final Random RAND = new Random();
 
     // ── State ─────────────────────────────────────────────────────────
     private boolean enabled = false;
@@ -116,6 +123,12 @@ public class AutoAttackManager {
 
     public PriorityMode getPriorityMode() { return priorityMode; }
     public void setPriorityMode(PriorityMode mode) { this.priorityMode = mode; }
+
+    public int getAttackItemSlot() { return attackItemSlot; }
+    public void setAttackItemSlot(int slot) { this.attackItemSlot = slot; }
+
+    public boolean isRandomCps() { return randomCps; }
+    public void setRandomCps(boolean randomCps) { this.randomCps = randomCps; }
 
     /** Returns the currently locked target, or {@code null} if none. */
     public LivingEntity getCurrentTarget() { return currentTarget; }
@@ -194,7 +207,7 @@ public class AutoAttackManager {
         // ── 3. Smooth aim — update target every N ticks to dampen entity-movement jitter ──
         var sa = MacroModClient.getSmoothAim();
         if (sa != null && aimUpdateTick >= AIM_UPDATE_INTERVAL_TICKS) {
-            sa.setTarget(bodyCenter(currentTarget));
+            sa.setTarget(findBestAimPoint(client, player, currentTarget));
             aimUpdateTick = 0;
         }
 
@@ -225,9 +238,13 @@ public class AutoAttackManager {
             releaseForward();
         }
 
+        // ── 5b. Switch to selected attack item if configured ─────────────────
+        if (attackItemSlot >= 0 && attackItemSlot <= 8) {
+            client.player.getInventory().setSelectedSlot(attackItemSlot);
+        }
+
         // ── 6. Spam-click at 3.5 blocks range with CPS throttling ──────────
-        // Spam using fixed CPS (10) for consistent auto-attack behavior
-        int spamCps = 10;
+        int spamCps = randomCps ? (7 + RAND.nextInt(5)) : 10;
         long cpsIntervalMs = 1000L / spamCps;
         
         var saCheck = MacroModClient.getSmoothAim();
@@ -346,6 +363,51 @@ public class AutoAttackManager {
                 RaycastContext.FluidHandling.NONE,
                 (Entity) player);
         return client.world.raycast(ctx).getType() == HitResult.Type.MISS;
+    }
+
+    /**
+     * Finds the best visible aim point on the target entity.
+     * Tests candidates in priority order: head, center, chest, feet, then all 8 bounding-box
+     * corners. Returns the first point with an unobstructed raycast from the player's eyes,
+     * or falls back to body center if no candidate is visible.
+     */
+    private Vec3d findBestAimPoint(MinecraftClient client, ClientPlayerEntity player, LivingEntity target) {
+        if (client.world == null) return bodyCenter(target);
+
+        Box bb = target.getBoundingBox();
+        double cx = (bb.minX + bb.maxX) * 0.5;
+        double cz = (bb.minZ + bb.maxZ) * 0.5;
+        double h  = target.getHeight();
+
+        // Candidates: head, center, chest, feet, then 8 corners
+        Vec3d[] candidates = {
+            new Vec3d(cx, bb.minY + h * 0.9,  cz),   // head
+            new Vec3d(cx, bb.minY + h * 0.5,  cz),   // center
+            new Vec3d(cx, bb.minY + h * 0.7,  cz),   // chest
+            new Vec3d(cx, bb.minY + h * 0.15, cz),   // feet
+            new Vec3d(bb.minX, bb.minY + h * 0.5, bb.minZ),
+            new Vec3d(bb.maxX, bb.minY + h * 0.5, bb.minZ),
+            new Vec3d(bb.minX, bb.minY + h * 0.5, bb.maxZ),
+            new Vec3d(bb.maxX, bb.minY + h * 0.5, bb.maxZ),
+            new Vec3d(bb.minX, bb.minY + h * 0.9, bb.minZ),
+            new Vec3d(bb.maxX, bb.minY + h * 0.9, bb.minZ),
+            new Vec3d(bb.minX, bb.minY + h * 0.9, bb.maxZ),
+            new Vec3d(bb.maxX, bb.minY + h * 0.9, bb.maxZ),
+        };
+
+        Vec3d eyes = player.getEyePos();
+        for (Vec3d candidate : candidates) {
+            RaycastContext ctx = new RaycastContext(
+                    eyes, candidate,
+                    RaycastContext.ShapeType.COLLIDER,
+                    RaycastContext.FluidHandling.NONE,
+                    (Entity) player);
+            if (client.world.raycast(ctx).getType() == HitResult.Type.MISS) {
+                return candidate;
+            }
+        }
+        // Nothing visible — fall back to body center
+        return bodyCenter(target);
     }
 
     /**

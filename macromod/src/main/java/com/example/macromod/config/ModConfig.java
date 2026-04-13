@@ -33,7 +33,7 @@ public class ModConfig {
     // ── ESP / Visuals ────────────────────────────────────────────────
     private boolean targetEspEnabled = true;
     private boolean entitiesEspEnabled = false;
-    private boolean blockEspEnabled = false;    private boolean fairySoulsEspEnabled = false;    private int blockEspRadius = 16;
+    private boolean blockEspEnabled = false;    private boolean fairySoulsEspEnabled = false;    private boolean hotspotEspEnabled = false;    private int blockEspRadius = 16;
     private List<String> entityWhitelist = new ArrayList<>();
     private List<String> blockWhitelist = new ArrayList<>();
 
@@ -159,6 +159,8 @@ public class ModConfig {
 
     public boolean isFairySoulsEspEnabled() { return fairySoulsEspEnabled; }
     public void setFairySoulsEspEnabled(boolean v) { this.fairySoulsEspEnabled = v; }
+    public boolean isHotspotEspEnabled() { return hotspotEspEnabled; }
+    public void setHotspotEspEnabled(boolean v) { this.hotspotEspEnabled = v; }
 
     public List<String> getEntityWhitelist() {
         if (entityWhitelist == null) {

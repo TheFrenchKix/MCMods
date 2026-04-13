@@ -93,13 +93,13 @@ public class HudOverlay {
 
         // Macro name
         context.drawTextWithShadow(textRenderer,
-                Text.translatable("macromod.hud.recording", macro.getName()),
+                Text.literal("Recording: " + macro.getName()),
                 x, y, 0xFFFF00);
         y += LINE_HEIGHT;
 
         // Step count
         context.drawTextWithShadow(textRenderer,
-                Text.translatable("macromod.hud.recording_steps", macro.getSteps().size()),
+                Text.literal("Steps: " + macro.getSteps().size()),
                 x, y, 0xFFFFFF);
         y += LINE_HEIGHT;
 
@@ -107,7 +107,7 @@ public class HudOverlay {
         MacroStep currentStep = recorder.getCurrentStep();
         int blockCount = currentStep != null ? currentStep.getTargets().size() : 0;
         context.drawTextWithShadow(textRenderer,
-                Text.translatable("macromod.hud.recording_blocks", blockCount),
+                Text.literal("Blocks in step: " + blockCount),
                 x, y, 0xFFFFFF);
         y += LINE_HEIGHT;
 
@@ -115,7 +115,7 @@ public class HudOverlay {
         String lastAdded = recorder.getLastAddedInfo();
         if (!lastAdded.isEmpty()) {
             context.drawTextWithShadow(textRenderer,
-                    Text.translatable("macromod.hud.last_added", lastAdded),
+                    Text.literal("Last: " + lastAdded),
                     x, y, 0xAAAAAA);
         }
     }
@@ -130,7 +130,7 @@ public class HudOverlay {
 
         // Macro name
         context.drawTextWithShadow(textRenderer,
-                Text.translatable("macromod.hud.macro", macro.getName()),
+                Text.literal("Macro: " + macro.getName()),
                 x, y, 0x55FF55);
         y += LINE_HEIGHT;
 
@@ -138,23 +138,19 @@ public class HudOverlay {
         String stateStr = getStateDisplay(executor.getState());
         int stateColor = getStateColor(executor.getState());
         context.drawTextWithShadow(textRenderer,
-                Text.translatable("macromod.hud.state", stateStr),
+                Text.literal("State: " + stateStr),
                 x, y, stateColor);
         y += LINE_HEIGHT;
 
         // Step progress
         context.drawTextWithShadow(textRenderer,
-                Text.translatable("macromod.hud.step",
-                        executor.getCurrentStepIndex() + 1,
-                        executor.getTotalSteps()),
+                Text.literal("Step " + (executor.getCurrentStepIndex() + 1) + " / " + executor.getTotalSteps()),
                 x, y, 0xFFFFFF);
         y += LINE_HEIGHT;
 
         // Block progress in current step
         context.drawTextWithShadow(textRenderer,
-                Text.translatable("macromod.hud.blocks",
-                        executor.getBlocksProcessedInStep(),
-                        executor.getTotalBlocksInStep()),
+                Text.literal("Blocks: " + executor.getBlocksProcessedInStep() + " / " + executor.getTotalBlocksInStep()),
                 x, y, 0xFFFFFF);
         y += LINE_HEIGHT;
 
@@ -163,10 +159,9 @@ public class HudOverlay {
         if (stepIdx < macro.getSteps().size()) {
             MacroStep step = macro.getSteps().get(stepIdx);
             context.drawTextWithShadow(textRenderer,
-                    Text.translatable("macromod.hud.waypoint",
-                            step.getDestination().getX(),
-                            step.getDestination().getY(),
-                            step.getDestination().getZ()),
+                    Text.literal("WP: " + step.getDestination().getX()
+                            + ", " + step.getDestination().getY()
+                            + ", " + step.getDestination().getZ()),
                     x, y, 0xCCCCCC);
             y += LINE_HEIGHT;
         }

@@ -3,6 +3,7 @@ package com.example.macromod.ui;
 import com.example.macromod.MacroModClient;
 import com.example.macromod.config.ModConfig;
 import com.example.macromod.manager.AutoAttackManager;
+import com.example.macromod.manager.HotspotManager;
 import net.fabricmc.fabric.api.client.rendering.v1.world.WorldRenderContext;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.gl.RenderPipelines;
@@ -54,7 +55,19 @@ public class ESPRenderer {
             ).translucent().expectedBufferSize(1536).build()
     );
 
-    /** How often (ticks) to re-scan blocks for the block ESP cache. */
+    /**
+     * Filled-triangle layer for hotspot circle ESP, no depth test, blending on.
+     * Uses DEBUG_FILLED_BOX_SNIPPET which outputs POSITION_COLOR geometry.
+     */
+    private static final RenderLayer HOTSPOT_FILL_LAYER = RenderLayer.of(
+            "macromod_hotspot_fill",
+            RenderSetup.builder(RenderPipelines.DEBUG_FILLED_BOX)
+                    .translucent().expectedBufferSize(4096).build()
+    );
+
+    private static final int HOTSPOT_CIRCLE_SEGMENTS = 48;
+    private static final float HOTSPOT_CIRCLE_RADIUS   = 1.5f;
+
     private static final int BLOCK_SCAN_INTERVAL = 20;
 
     private int tickCounter = 0;
@@ -220,6 +233,33 @@ public class ESPRenderer {
         // Must be wearing a player head
         Identifier headId = Registries.ITEM.getId(ase.getEquippedStack(EquipmentSlot.HEAD).getItem());
         return headId.toString().equals("minecraft:player_head");
+    }
+
+    // ── Filled circle helper ────────────────────────────────────────
+
+    /**
+     * Renders a flat horizontal filled circle (XZ plane) as a triangle fan.
+     * Each slice is center + edge_i + edge_(i+1); total = SEGMENTS triangles.
+     */
+    private static void drawFilledCircle(MatrixStack matrices, VertexConsumer vc,
+                                          Vec3d center, float radius,
+                                          float r, float g, float b, float a) {
+        org.joml.Matrix4f m = matrices.peek().getPositionMatrix();
+        float cx = (float) center.x;
+        float cy = (float) center.y;
+        float cz = (float) center.z;
+        for (int i = 0; i < HOTSPOT_CIRCLE_SEGMENTS; i++) {
+            double a0 = 2.0 * Math.PI * i       / HOTSPOT_CIRCLE_SEGMENTS;
+            double a1 = 2.0 * Math.PI * (i + 1) / HOTSPOT_CIRCLE_SEGMENTS;
+            float x0 = cx + radius * (float) Math.cos(a0);
+            float z0 = cz + radius * (float) Math.sin(a0);
+            float x1 = cx + radius * (float) Math.cos(a1);
+            float z1 = cz + radius * (float) Math.sin(a1);
+            // Triangle: center, edge0, edge1
+            vc.vertex(m, cx, cy, cz).color(r, g, b, a);
+            vc.vertex(m, x0, cy, z0).color(r, g, b, a);
+            vc.vertex(m, x1, cy, z1).color(r, g, b, a);
+        }
     }
 
     // ── Box outline helper ──────────────────────────────────────────

@@ -19,6 +19,10 @@ dependencies {
     mappings "net.fabricmc:yarn:${project.yarn_mappings}:v2"
     modImplementation "net.fabricmc:fabric-loader:${project.loader_version}"
     modImplementation "net.fabricmc.fabric-api:fabric-api:${project.fabric_version}"
+
+    // Netty SOCKS4/SOCKS5 proxy support — must be included in JAR for runtime
+    modImplementation "io.netty:netty-handler-proxy:4.1.97.Final"
+    include "io.netty:netty-handler-proxy:4.1.97.Final"
 }
 
 processResources {

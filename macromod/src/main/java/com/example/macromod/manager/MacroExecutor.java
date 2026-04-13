@@ -148,6 +148,13 @@ public class MacroExecutor {
     // ─── Radius scan ───────────────────────────────────────────────
     /** Set once when entering the MINING state for a step; cleared on step advance. */
     private boolean radiusScanDone = false;
+    /** Player-centered scan sphere radius (matches interaction range). */
+    private static final double PLAYER_REACH_RADIUS    = 4.5;
+    private static final double PLAYER_REACH_RADIUS_SQ = PLAYER_REACH_RADIUS * PLAYER_REACH_RADIUS;
+    /** Re-trigger scan when player moves this far (squared) from the last scan origin. */
+    private static final double RESCAN_MOVE_THRESHOLD_SQ = 2.0 * 2.0;
+    /** Player block position at the last scanRadiusTargets call — drives dynamic rescan. */
+    private BlockPos lastScanPlayerPos = null;
     // ─── Statistics ─────────────────────────────────────────────
     private int blocksMinedTotal;
     private int blocksSkippedTotal;
@@ -803,7 +810,18 @@ public class MacroExecutor {
         if (!radiusScanDone) {
             radiusScanDone = true;
             if (!step.getTargets().isEmpty()) {
-                scanRadiusTargets(step, world);
+                scanRadiusTargets(step, world, player);
+            }
+        }
+
+        // ── Dynamic rescan: if player has moved >2 blocks since last scan, re-scan ──
+        if (lastScanPlayerPos != null && !step.getTargets().isEmpty()) {
+            BlockPos pp = player.getBlockPos();
+            int dx = pp.getX() - lastScanPlayerPos.getX();
+            int dy = pp.getY() - lastScanPlayerPos.getY();
+            int dz = pp.getZ() - lastScanPlayerPos.getZ();
+            if ((double)(dx*dx + dy*dy + dz*dz) > RESCAN_MOVE_THRESHOLD_SQ) {
+                scanRadiusTargets(step, world, player);
             }
         }
 
@@ -817,63 +835,24 @@ public class MacroExecutor {
             return;
         }
 
-        // Find the closest unprocessed block from the crosshair direction (for faster, more human-like mining)
-        HitResult crosshair = client.crosshairTarget;
-        BlockTarget bestTarget = null;
-        double bestDistance = Double.MAX_VALUE;
-        
-        if (crosshair instanceof BlockHitResult bhr) {
-            Vec3d eyePos = player.getEyePos();
-            Vec3d blockHitPos = bhr.getPos();
-            
-            // Check all unprocessed targets and find the closest to the crosshair hit point
-            for (BlockTarget t : step.getTargets()) {
-                if (!t.isProcessed() && !t.isSkipped()) {
-                    Vec3d targetCenter = new Vec3d(
-                        t.getPos().getX() + 0.5,
-                        t.getPos().getY() + 0.5,
-                        t.getPos().getZ() + 0.5
-                    );
-                    double distance = eyePos.squaredDistanceTo(targetCenter);
-                    
-                    // Strong preference for blocks close to crosshair
-                    if (t.getPos().equals(bhr.getBlockPos())) {
-                        bestTarget = t;
-                        bestDistance = 0; // Highest priority - direct crosshair hit
-                        break;
-                    }
-                    
-                    // Otherwise pick closest to crosshair direction
-                    if (distance < bestDistance) {
-                        bestDistance = distance;
-                        bestTarget = t;
-                    }
-                }
-            }
+        // Advance past already-processed targets to keep the index valid
+        while (currentBlockTargetIndex < step.getTargets().size()
+                && step.getTargets().get(currentBlockTargetIndex).isProcessed()) {
+            currentBlockTargetIndex++;
         }
-        
-        // If we found a good target from crosshair proximity, mine it
-        if (bestTarget != null) {
-            mineSingleBlock(bestTarget, player, world, client, step);
+
+        if (currentBlockTargetIndex >= step.getTargets().size()) {
+            if (client.options != null) client.options.attackKey.setPressed(false);
+            advanceToNextStep();
             return;
         }
 
-        // Fallback: find next unprocessed target sequentially
-        while (currentBlockTargetIndex < step.getTargets().size()) {
-            BlockTarget target = step.getTargets().get(currentBlockTargetIndex);
-
-            if (target.isProcessed()) {
-                currentBlockTargetIndex++;
-                continue;
-            }
-
-            mineSingleBlock(target, player, world, client, step);
-            return; // Only process one block per tick
+        // Release attack key while not actively mining to avoid ghost-breaking adjacent blocks
+        if (!isMiningBlock && client.options != null) {
+            client.options.attackKey.setPressed(false);
         }
 
-        // All targets processed
-        if (client.options != null) client.options.attackKey.setPressed(false);
-        advanceToNextStep();
+        mineSingleBlock(step.getTargets().get(currentBlockTargetIndex), player, world, client, step);
     }
 
     private void tickNextStep() {
@@ -897,19 +876,21 @@ public class MacroExecutor {
             blocksMinedTotal++;
             currentBlockTargetIndex++;
             isMiningBlock = false;
+            aimLocked = false;
+            aimLockedAtMs = -1L;
             miningDelayEndMs = System.currentTimeMillis() + HumanReactionTime.getMiningReactionTime(currentMacro.getConfig().getMiningDelay());
             return;
         }
 
-        // Check block type match
+        // Check block type match — always skip if block changed
         if (!actualBlockId.equals(target.getBlockId())) {
-            if (currentMacro.getConfig().isSkipMismatch()) {
-                target.setSkipped(true);
-                blocksSkippedTotal++;
-                currentBlockTargetIndex++;
-                isMiningBlock = false;
-                return;
-            }
+            target.setSkipped(true);
+            blocksSkippedTotal++;
+            currentBlockTargetIndex++;
+            isMiningBlock = false;
+            aimLocked = false;
+            aimLockedAtMs = -1L;
+            return;
         }
 
         // Skip unripe crops: if block has an 'age' property, only mine when at max age
@@ -930,18 +911,12 @@ public class MacroExecutor {
             }
         }
 
-        // Check Y difference and horizontal distance
-        double yDiff = Math.abs(blockPos.getY() + 0.5 - eyePos.y);
-        double horizontalDist = Math.sqrt(
-            Math.pow(blockPos.getX() + 0.5 - eyePos.x, 2) +
-            Math.pow(blockPos.getZ() + 0.5 - eyePos.z, 2)
-        );
-
-        // Skip if Y difference > 3 or horizontal distance > 5
-        if (yDiff > 3 || horizontalDist > 5) {
-            if (client.options != null) client.options.attackKey.setPressed(false);
-            LOGGER.info("[DBG] mine SKIP range: block={} yDiff={} hDist={}", blockPos,
-                String.format("%.2f", yDiff), String.format("%.2f", horizontalDist));
+        // 3D sphere range check: permanently skip blocks truly out of approach range
+        Vec3d blockCenter3d = Vec3d.ofCenter(blockPos);
+        double distSq = eyePos.squaredDistanceTo(blockCenter3d);
+        if (distSq > 6.0 * 6.0) {
+            LOGGER.info("[DBG] mine SKIP range 3D: block={} dist={}", blockPos,
+                String.format("%.2f", Math.sqrt(distSq)));
             target.setSkipped(true);
             blocksSkippedTotal++;
             currentBlockTargetIndex++;
@@ -955,16 +930,23 @@ public class MacroExecutor {
             movementHelper.lookAt(player, blockCenter, 0.10f);
         }
 
-        // Check if block is actually visible (not obstructed by other blocks)
-        boolean canSee = BlockUtils.hasLineOfSight(world, eyePos, blockPos);
+        // Check if the aim point on the block is actually visible (raycast to the face point)
+        net.minecraft.world.RaycastContext losCtx = new net.minecraft.world.RaycastContext(
+                eyePos, blockCenter,
+                net.minecraft.world.RaycastContext.ShapeType.COLLIDER,
+                net.minecraft.world.RaycastContext.FluidHandling.NONE,
+                (net.minecraft.entity.Entity) player);
+        net.minecraft.util.hit.BlockHitResult losResult = world.raycast(losCtx);
+        boolean canSee = losResult.getBlockPos().equals(blockPos);
 
         // If not visible, try to reposition closer before giving up.
         if (!canSee) {
-            if (client.options != null) client.options.attackKey.setPressed(false);
-
-            if (horizontalDist > 1.5) {
+            double hDist = Math.sqrt(
+                Math.pow(blockPos.getX() + 0.5 - player.getX(), 2) +
+                Math.pow(blockPos.getZ() + 0.5 - player.getZ(), 2));
+            if (hDist > 1.5) {
                 LOGGER.info("[DBG] mine NO_LOS reposition: block={} hDist={}",
-                    blockPos, String.format("%.2f", horizontalDist));
+                    blockPos, String.format("%.2f", hDist));
                 noLOSBlock = null; // reset strafe when we're still far
                 movementHelper.forwardToBlock(player, blockPos);
                 return;
@@ -1012,12 +994,12 @@ public class MacroExecutor {
         // Regained LOS — reset strafe state
         noLOSBlock = null;
 
-        // Move forward if not within reach
+        // Move forward if not within reach — keep left click held so Minecraft
+        // starts breaking as soon as the crosshair lands on the block face.
         double reachDist = player.getBlockInteractionRange();
         if (!BlockUtils.isWithinReach(eyePos, blockPos, reachDist)) {
-            if (client.options != null) client.options.attackKey.setPressed(false);
-            LOGGER.info("[DBG] mine OUT_OF_REACH: block={} hDist={} reach={}", blockPos,
-                String.format("%.2f", horizontalDist), String.format("%.2f", reachDist));
+            LOGGER.info("[DBG] mine OUT_OF_REACH: block={} dist3D={} reach={}", blockPos,
+                String.format("%.2f", Math.sqrt(distSq)), String.format("%.2f", reachDist));
             movementHelper.forwardToBlock(player, blockPos);
             return;
         }
@@ -1026,7 +1008,6 @@ public class MacroExecutor {
         // Wait until aligned if not locked
         if (!currentMacro.getConfig().isLockCrosshair()) {
             if (!movementHelper.isLookingAt(player, blockCenter, 6.0f)) {
-                if (client.options != null) client.options.attackKey.setPressed(false);
                 return;
             }
         }
@@ -1034,7 +1015,6 @@ public class MacroExecutor {
         // Verify crosshair is on target block
         HitResult crosshair = client.crosshairTarget;
         if (!(crosshair instanceof BlockHitResult bhr) || !bhr.getBlockPos().equals(blockPos)) {
-            if (client.options != null) client.options.attackKey.setPressed(false);
             aimLocked = false;  // Crosshair lost — unlock aim to re-adjust
             aimLockedAtMs = -1L;
             long now2 = System.currentTimeMillis();
@@ -1053,24 +1033,46 @@ public class MacroExecutor {
         }
 
         // Mine through the normal left-click path once dwell has elapsed.
+        // Also hold the attack key so Minecraft's native breaking loop runs in parallel.
         boolean dwellPassed = aimLockedAtMs >= 0
                 && System.currentTimeMillis() - aimLockedAtMs >= MINING_CLICK_DWELL_MS;
-        if (dwellPassed) MouseInputHelper.continueLeftClick(client);
+        if (dwellPassed) {
+            if (client.options != null) client.options.attackKey.setPressed(true);
+            MouseInputHelper.continueLeftClick(client);
+        }
         if (!isMiningBlock) {
             isMiningBlock = true;
             lastMineTime = System.currentTimeMillis();
         }
 
-        // Check if block is now air (mined successfully)
+        // During mining: check if the block was replaced (Hypixel replaces blocks mid-mine).
+        // Periodically re-verify the block is still the target type.
+        if (isMiningBlock && System.currentTimeMillis() - lastMineTime > 200) {
+            String currentBlockId = BlockUtils.getBlockId(world, blockPos);
+            if (!currentBlockId.equals(target.getBlockId())) {
+                LOGGER.info("[DBG] mine BLOCK_REPLACED: block={} was {} now {}", blockPos,
+                    target.getBlockId(), currentBlockId);
+                target.setSkipped(true);
+                blocksSkippedTotal++;
+                currentBlockTargetIndex++;
+                isMiningBlock = false;
+                aimLocked = false;
+                aimLockedAtMs = -1L;
+                return;
+            }
+        }
+
+        // Check if block is now air (mined successfully) — do NOT release the attack key
+        // here so the next block starts breaking immediately without a click gap.
         if (BlockUtils.isAir(world, blockPos)) {
-            if (client.options != null) client.options.attackKey.setPressed(false);
             target.setMined(true);
             blocksMinedTotal++;
             isMiningBlock = false;
             aimLocked = false;  // Unlock aim for next block
             aimLockedAtMs = -1L;
+            if (client.options != null) client.options.attackKey.setPressed(false); // release immediately after mining
             miningDelayEndMs = System.currentTimeMillis() + HumanReactionTime.getMiningReactionTime(currentMacro.getConfig().getMiningDelay());
-            rescanAroundBlock(blockPos, world, step);
+            scanRadiusTargets(step, world, player); // player-centered rescan for newly exposed blocks
             currentBlockTargetIndex++;
             return;
         }
@@ -1227,7 +1229,8 @@ public class MacroExecutor {
                 // Only require angle check (6 degrees), don't require entity in exact crosshair center
             boolean lookingAtTarget = sa != null && sa.isOnTarget(player, 6f);
             long now = System.currentTimeMillis();
-            long cpsIntervalMs      = 1000L / Math.max(1, cfg.getAttackCPS());
+            int effectiveCps = cfg.isRandomAttackCps() ? (7 + ATTACK_RAND.nextInt(5)) : cfg.getAttackCPS();
+            long cpsIntervalMs      = 1000L / Math.max(1, effectiveCps);
             boolean cpsReady        = now - lastAttackMs >= cpsIntervalMs;
             
             // Spam-click at 3.5 blocks range
@@ -1331,53 +1334,18 @@ public class MacroExecutor {
     }
 
     /**
-     * Scans a cube of radius {@code step.getRadius()} (default 5) around the step
-     * destination and appends any blocks whose ID matches one of the step's already-
-     * registered targets — as long as the position isn't already listed.
+     * Scans for additional blocks of the same type(s) as the step's existing targets,
+     * within a 4.5-block sphere of the <em>player's current position</em>.
      *
-     * <p>Blocks that aren't in reach when the player arrives are still added;
-     * {@code tickMining} will call {@code forwardToBlock} to close the gap.</p>
+     * <ul>
+     *   <li>Loop radius capped at 5 → max 1 331 iterations (41³ old → 1 331 new).</li>
+     *   <li>Sphere filter (dx²+dy²+dz² ≤ PLAYER_REACH_RADIUS_SQ) eliminates ~75 %.</li>
+     *   <li>Discovered candidates are sorted nearest-first before appending, so the
+     *       linear cursor in {@link #tickMining} will process closest blocks first.</li>
+     *   <li>Caller tracks {@link #lastScanPlayerPos} for dynamic re-trigger logic.</li>
+     * </ul>
      */
-    /**
-     * Rescan the area around a destroyed block to find similar blocks nearby.
-     */
-    private void rescanAroundBlock(BlockPos destroyedAt, ClientWorld world, MacroStep step) {
-        if (step == null) return;
-        int rescanRadius = 5; // Rescan 5 blocks around destroyed block
-        
-        java.util.Set<String> wantedIds = new HashSet<>();
-        for (BlockTarget t : step.getTargets()) {
-            wantedIds.add(t.getBlockId());
-        }
-        if (wantedIds.isEmpty()) return;
-        
-        java.util.Set<BlockPos> knownPositions = new HashSet<>();
-        for (BlockTarget t : step.getTargets()) {
-            knownPositions.add(t.getPos());
-        }
-        
-        int added = 0;
-        for (int dx = -rescanRadius; dx <= rescanRadius; dx++) {
-            for (int dy = -rescanRadius; dy <= rescanRadius; dy++) {
-                for (int dz = -rescanRadius; dz <= rescanRadius; dz++) {
-                    BlockPos candidate = destroyedAt.add(dx, dy, dz);
-                    if (knownPositions.contains(candidate)) continue;
-                    if (BlockUtils.isAir(world, candidate)) continue;
-                    String id = BlockUtils.getBlockId(world, candidate);
-                    if (wantedIds.contains(id)) {
-                        step.addTarget(new BlockTarget(candidate, id));
-                        knownPositions.add(candidate);
-                        added++;
-                    }
-                }
-            }
-        }
-    }
-
-    private void scanRadiusTargets(MacroStep step, ClientWorld world) {
-        int radius = Math.max(step.getRadius(), 20); // Use radius 20 as minimum
-        if (radius <= 0) return;
-
+    private void scanRadiusTargets(MacroStep step, ClientWorld world, ClientPlayerEntity player) {
         // Collect the block IDs we are looking for (from explicitly listed targets)
         java.util.Set<String> wantedIds = new HashSet<>();
         for (BlockTarget t : step.getTargets()) {
@@ -1391,25 +1359,41 @@ public class MacroExecutor {
             knownPositions.add(t.getPos());
         }
 
-        BlockPos center = step.getDestination();
-        int added = 0;
-        for (int dx = -radius; dx <= radius; dx++) {
-            for (int dy = -radius; dy <= radius; dy++) {
-                for (int dz = -radius; dz <= radius; dz++) {
+        BlockPos center = player.getBlockPos();
+        Vec3d eyePos = player.getEyePos();
+        int scanRadius = 5; // loop bound — sphere filter keeps actual range to 4.5 blocks
+
+        // Collect candidates into a temp list for distance-sorting
+        java.util.List<BlockTarget> discovered = new java.util.ArrayList<>();
+        for (int dx = -scanRadius; dx <= scanRadius; dx++) {
+            for (int dy = -scanRadius; dy <= scanRadius; dy++) {
+                for (int dz = -scanRadius; dz <= scanRadius; dz++) {
+                    // Sphere filter: skip if outside 4.5-block radius
+                    if ((double)(dx*dx + dy*dy + dz*dz) > PLAYER_REACH_RADIUS_SQ) continue;
                     BlockPos candidate = center.add(dx, dy, dz);
                     if (knownPositions.contains(candidate)) continue;
                     if (BlockUtils.isAir(world, candidate)) continue;
                     String id = BlockUtils.getBlockId(world, candidate);
                     if (wantedIds.contains(id)) {
-                        step.addTarget(new BlockTarget(candidate, id));
-                        knownPositions.add(candidate);
-                        added++;
+                        discovered.add(new BlockTarget(candidate, id));
+                        knownPositions.add(candidate); // prevent dups within this scan
                     }
                 }
             }
         }
-        if (added > 0) {
-            LOGGER.info("Radius scan found {} extra blocks for step {}", added, currentStepIndex);
+
+        // Sort by 3D distance from eye (nearest first) so linear cursor mines near blocks first
+        discovered.sort(java.util.Comparator.comparingDouble(
+            bt -> eyePos.squaredDistanceTo(Vec3d.ofCenter(bt.getPos()))));
+
+        for (BlockTarget bt : discovered) {
+            step.addTarget(bt);
+        }
+
+        lastScanPlayerPos = center;
+        if (!discovered.isEmpty()) {
+            LOGGER.info("Radius scan found {} extra blocks for step {} (player-centered r=4.5)",
+                discovered.size(), currentStepIndex);
         }
     }
 
@@ -1537,6 +1521,14 @@ public class MacroExecutor {
      *   block same/+1 level → nearest side → second side → top → bottom
      *   block 2+ above      → bottom → nearest side → second side → top
      */
+    /**
+     * Returns a point on the target block's surface that is actually visible from
+     * the player's eyes.  Faces are tried in priority order (based on vertical offset),
+     * and for each face 5 candidate points (centre + 4 inset corners) are raycast-tested.
+     * The first candidate whose raycast hits the target block is returned.
+     *
+     * <p>Falls back to the centre of the nearest side face if no candidate passes.</p>
+     */
     private static Vec3d visibleFaceCentre(Vec3d eye, BlockPos pos, int playerBlockY,
                                             net.minecraft.client.world.ClientWorld world) {
         double cx = pos.getX() + 0.5;
@@ -1569,27 +1561,82 @@ public class MacroExecutor {
         Vec3d[]    faces;
         BlockPos[] adjs;
         if (dy < 0) {
-            // Block below player: top face preferred → sides → bottom
             faces = new Vec3d[]    { fTop,  fSide1, fSide2, fBottom };
             adjs  = new BlockPos[] { aTop,  aSide1, aSide2, aBottom };
         } else if (dy >= 2) {
-            // Block 2+ above player: bottom face preferred → sides → top
             faces = new Vec3d[]    { fBottom, fSide1, fSide2, fTop  };
             adjs  = new BlockPos[] { aBottom, aSide1, aSide2, aTop  };
         } else {
-            // Same level or 1 above: nearest side preferred → other side → top → bottom
             faces = new Vec3d[]    { fSide1, fSide2, fTop,  fBottom };
             adjs  = new BlockPos[] { aSide1, aSide2, aTop,  aBottom };
         }
 
-        // Return first face whose adjacent block is air (unobstructed)
+        // For each face in priority order, test candidate points with raycasts
+        double inset = 0.1; // pixels from true edge to avoid precision issues
         for (int i = 0; i < faces.length; i++) {
-            if (BlockUtils.isAir(world, adjs[i])) {
-                return faces[i];
+            if (!BlockUtils.isAir(world, adjs[i])) continue; // face buried by adjacent solid
+
+            Vec3d[] candidates = buildFaceCandidates(pos, faces[i], adjs[i], inset);
+            for (Vec3d candidate : candidates) {
+                net.minecraft.world.RaycastContext ctx = new net.minecraft.world.RaycastContext(
+                        eye, candidate,
+                        net.minecraft.world.RaycastContext.ShapeType.COLLIDER,
+                        net.minecraft.world.RaycastContext.FluidHandling.NONE,
+                        (net.minecraft.entity.Entity) null);
+                net.minecraft.util.hit.BlockHitResult hit = world.raycast(ctx);
+                // Accept if the ray reached the target block
+                if (hit.getBlockPos().equals(pos)) {
+                    return candidate;
+                }
             }
         }
-        // All adjacent blocks solid (fully enclosed) — best-effort nearest side
+        // All candidates occluded — best-effort nearest side centre
         return fSide1;
+    }
+
+    /**
+     * Generates 5 candidate aim points on a block face: centre + 4 inset corners.
+     * The face orientation is derived from the relationship between pos and adjPos.
+     */
+    private static Vec3d[] buildFaceCandidates(BlockPos pos, Vec3d faceCenter,
+                                                BlockPos adjPos, double inset) {
+        int fdx = adjPos.getX() - pos.getX();
+        int fdy = adjPos.getY() - pos.getY();
+        int fdz = adjPos.getZ() - pos.getZ();
+
+        double px = pos.getX(), py = pos.getY(), pz = pos.getZ();
+
+        if (fdy != 0) {
+            // Horizontal face (top or bottom)
+            double y = faceCenter.y;
+            return new Vec3d[] {
+                faceCenter,
+                new Vec3d(px + inset,     y, pz + inset),
+                new Vec3d(px + 1 - inset, y, pz + inset),
+                new Vec3d(px + inset,     y, pz + 1 - inset),
+                new Vec3d(px + 1 - inset, y, pz + 1 - inset),
+            };
+        } else if (fdx != 0) {
+            // X-axis face (east or west)
+            double x = faceCenter.x;
+            return new Vec3d[] {
+                faceCenter,
+                new Vec3d(x, py + inset,     pz + inset),
+                new Vec3d(x, py + 1 - inset, pz + inset),
+                new Vec3d(x, py + inset,     pz + 1 - inset),
+                new Vec3d(x, py + 1 - inset, pz + 1 - inset),
+            };
+        } else {
+            // Z-axis face (north or south)
+            double z = faceCenter.z;
+            return new Vec3d[] {
+                faceCenter,
+                new Vec3d(px + inset,     py + inset,     z),
+                new Vec3d(px + 1 - inset, py + inset,     z),
+                new Vec3d(px + inset,     py + 1 - inset, z),
+                new Vec3d(px + 1 - inset, py + 1 - inset, z),
+            };
+        }
     }
 
     /** Returns a random point within a bounding box (biased toward center vertically). */

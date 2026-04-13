@@ -45,6 +45,7 @@ import net.minecraft.util.hit.BlockHitResult;
 import net.minecraft.util.hit.EntityHitResult;
 import net.minecraft.util.hit.HitResult;
 import net.minecraft.util.math.BlockPos;
+import net.minecraft.util.math.Vec3d;
 import net.minecraft.world.BlockView;
 import org.lwjgl.glfw.GLFW;
 import org.slf4j.Logger;
@@ -85,6 +86,7 @@ public class MacroModClient implements ClientModInitializer {
     private static KeyBinding stopMacroKey;
     private static KeyBinding toggleKeybindHudKey;
     private static KeyBinding debugInfoKey;
+    private static KeyBinding debugEntitiesKey;
     private static KeyBinding toggleAutoFishKey;
     private static KeyBinding toggleFreelookKey;
     private static KeyBinding toggleAutoFarmerKey;
@@ -99,6 +101,9 @@ public class MacroModClient implements ClientModInitializer {
         // Initialize singletons
         configManager       = new ConfigManager();
         configManager.load();
+
+        // Load proxy config
+        com.example.macromod.proxy.ProxyManager.getInstance().load();
 
         macroManager        = new MacroManager();
         macroManager.loadAll();
@@ -205,6 +210,13 @@ public class MacroModClient implements ClientModInitializer {
                 MACRO_MOD_CATEGORY
         ));
 
+        debugEntitiesKey = KeyBindingHelper.registerKeyBinding(new KeyBinding(
+                "key.macromod.debug_entities",
+                InputUtil.Type.KEYSYM,
+                GLFW.GLFW_KEY_O,
+                MACRO_MOD_CATEGORY
+        ));
+
         toggleAutoFishKey = KeyBindingHelper.registerKeyBinding(new KeyBinding(
                 "key.macromod.toggle_auto_fish",
                 InputUtil.Type.KEYSYM,
@@ -255,6 +267,12 @@ public class MacroModClient implements ClientModInitializer {
 
             // Auto-attack tick
             AutoAttackManager.getInstance().tick();
+
+            // Hotspot ESP tick (detect hotspot ArmorStands)
+            com.example.macromod.manager.HotspotManager.getInstance().tick();
+
+            // Death / teleport detection (Hypixel die check)
+            com.example.macromod.manager.DeathDetector.getInstance().tick();
 
             // Keybinding checks
             handleKeybindings(client);
@@ -336,6 +354,11 @@ public class MacroModClient implements ClientModInitializer {
         // Debug info - show entity or block data
         while (debugInfoKey.wasPressed()) {
             debugTargetInfo(client);
+        }
+
+        // Debug entities around player (within 10m)
+        while (debugEntitiesKey.wasPressed()) {
+            debugEntitiesAroundPlayer(client);
         }
 
         // Toggle auto fishing
@@ -462,6 +485,71 @@ public class MacroModClient implements ClientModInitializer {
             sendDebugMessage(client.player, info);
             LOGGER.info("[DEBUG] {}", info);
         }
+    }
+
+    /**
+     * Displays information about entities around the player, in 10m radius. Useful for debugging mob farms, entity detection, and ESP rendering.
+     * Shows data in chat and logs it.
+     */
+    private void debugEntitiesAroundPlayer(MinecraftClient client) {
+        if (client.player == null || client.world == null) return;
+
+        ClientWorld world = client.world;
+        ClientPlayerEntity player = client.player;
+        Vec3d playerPos = new Vec3d(player.getX(), player.getY(), player.getZ());
+
+        StringBuilder sb = new StringBuilder();
+        sb.append("Nearby entities within 10m:\n");
+        int count = 0;
+        for (net.minecraft.entity.Entity entity : world.getEntities()) {
+            try {
+                double distSq = entity.squaredDistanceTo(playerPos);
+                if (distSq > 10 * 10) continue; // Only show entities within 10m
+
+                String extra = "";
+                if (entity instanceof net.minecraft.entity.decoration.ArmorStandEntity ase) {
+                    String customName = ase.getCustomName() == null ? "null" : ase.getCustomName().getString();
+                    ItemStack headStack = ase.getEquippedStack(EquipmentSlot.HEAD);
+                    String headItem = Registries.ITEM.getId(headStack.getItem()).toString();
+                    String skullOwner = extractSkullOwnerInfo(headStack);
+                    extra = String.format(
+                        " | ArmorStand[inv=%s, marker=%s, small=%s, noGravity=%s, nameVisible=%s, customName=%s, arms=%s, basePlate=%s, headItem=%s, owner=%s, width=%.3f, height=%.3f]",
+                        ase.isInvisible(),
+                        ase.isMarker(),
+                        ase.isSmall(),
+                        ase.hasNoGravity(),
+                        ase.isCustomNameVisible(),
+                        customName,
+                        ase.shouldShowArms(),
+                        ase.shouldShowBasePlate(),
+                        headItem,
+                        skullOwner,
+                        ase.getWidth(),
+                        ase.getHeight()
+                    );
+                }
+
+                String line = String.format(
+                    "ENTITY: %s | Pos: (%.1f, %.1f, %.1f) | Health: %.1f | Vel: (%.2f, %.2f, %.2f) | Invisible: %s | UUID: %s%s",
+                    entity.getType().getName().getString(),
+                    entity.getX(), entity.getY(), entity.getZ(),
+                    entity instanceof LivingEntity le ? le.getHealth() : 0.0,
+                    entity.getVelocity().x, entity.getVelocity().y, entity.getVelocity().z,
+                    entity.isInvisible(),
+                    entity.getUuid(),
+                    extra
+                );
+                sb.append(line).append("\n");
+                LOGGER.info("[DEBUG] {}", line);
+                count++;
+            } catch (Exception e) {
+                LOGGER.warn("[DEBUG] Failed to read entity: {}", e.getMessage());
+            }
+        }
+
+        LOGGER.info("[DEBUG] Found {} entities within 10m", count);
+        String info = sb.toString();
+        sendDebugMessage(client.player, info);
     }
 
     /**

@@ -114,20 +114,33 @@ public class EasyBlockGui extends BasePopupScreen {
     private boolean optAutoAttack;
     private AutoAttackManager.PriorityMode optAttackPriority;
     private float optAttackRange;
+    private int optAttackItemSlot = -1;
+    private boolean optRandomCps;
     private float animAutoAttack;
+    private float animRandomCps;
     private final int[] attackTgBounds = new int[4];
+    private final int[] randomCpsTgBounds = new int[4];
+    private final int[][] attackHotbar = new int[9][2];
     private int attackPriorityBtnX, attackPriorityBtnY, attackPriorityBtnW, attackPriorityBtnH;
     private int attackRangeLeftX, attackRangeRightX, attackRangeBtnY;
 
     // ═══════════════════════════════════════════════════════════════════
+    // State — Auto Mining
+    // ═══════════════════════════════════════════════════════════════════
+    private boolean optAutoMining;
+    private float animAutoMining;
+    private final int[] miningTgBounds = new int[4];
+
+    // ═══════════════════════════════════════════════════════════════════
     // State — Visuals tab
     // ═══════════════════════════════════════════════════════════════════
-    private boolean optTargetEsp, optEntitiesEsp, optBlockEsp, optFairySoulsEsp;
-    private float animTargetEsp, animEntitiesEsp, animBlockEsp, animFairySoulsEsp;
+    private boolean optTargetEsp, optEntitiesEsp, optBlockEsp, optFairySoulsEsp, optHotspotEsp;
+    private float animTargetEsp, animEntitiesEsp, animBlockEsp, animFairySoulsEsp, animHotspotEsp;
     private final int[] targetEspTgBounds = new int[4];
     private final int[] entitiesEspTgBounds = new int[4];
     private final int[] blockEspTgBounds = new int[4];
     private final int[] fairySoulsEspTgBounds = new int[4];
+    private final int[] hotspotEspTgBounds = new int[4];
     private int blockRadiusLeftX, blockRadiusRightX, blockRadiusBtnY;
     private int optBlockEspRadius;
 
@@ -203,7 +216,15 @@ public class EasyBlockGui extends BasePopupScreen {
         optAutoAttack = aam.isEnabled();
         optAttackPriority = aam.getPriorityMode();
         optAttackRange = aam.getAttackRange();
+        optAttackItemSlot = aam.getAttackItemSlot();
+        optRandomCps = aam.isRandomCps();
         animAutoAttack = optAutoAttack ? 1f : 0f;
+        animRandomCps = optRandomCps ? 1f : 0f;
+
+        com.example.macromod.manager.AutoMiningManager amm =
+                com.example.macromod.manager.AutoMiningManager.getInstance();
+        optAutoMining = amm.isEnabled();
+        animAutoMining = optAutoMining ? 1f : 0f;
 
         FreelookManager fl = FreelookManager.getInstance();
         optFreelook = fl.isEnabled();
@@ -225,11 +246,13 @@ public class EasyBlockGui extends BasePopupScreen {
         optEntitiesEsp = modCfg.isEntitiesEspEnabled();
         optBlockEsp = modCfg.isBlockEspEnabled();
         optFairySoulsEsp = modCfg.isFairySoulsEspEnabled();
+        optHotspotEsp = modCfg.isHotspotEspEnabled();
         optBlockEspRadius = modCfg.getBlockEspRadius();
         animTargetEsp = optTargetEsp ? 1f : 0f;
         animEntitiesEsp = optEntitiesEsp ? 1f : 0f;
         animBlockEsp = optBlockEsp ? 1f : 0f;
         animFairySoulsEsp = optFairySoulsEsp ? 1f : 0f;
+        animHotspotEsp = optHotspotEsp ? 1f : 0f;
     }
 
     @Override
@@ -638,12 +661,13 @@ public class EasyBlockGui extends BasePopupScreen {
                 farmerDirBtnX + 9, farmerDirBtnY + (dirH - 8) / 2, C_TEXT2);
         dy += dirH + 10;
 
-        // ── Auto Attack section ───────────────────────────────────────
+        // ── Auto Attack section ───────────────────────────────────────────────
         dy += 6;
         dy = drawSectionHeader(ctx, lx, dy, "Auto Attack");
 
         // Toggle
         animAutoAttack = Anim.smooth(animAutoAttack, optAutoAttack ? 1f : 0f, 20f);
+        animRandomCps  = Anim.smooth(animRandomCps,  optRandomCps  ? 1f : 0f, 20f);
         int aatw = ToggleRenderer.TOGGLE_W, aath = ToggleRenderer.TOGGLE_H;
         int aaRowH = Math.max(aath + 4, 20);
         ctx.drawTextWithShadow(textRenderer, Text.literal("Auto Attack"),
@@ -685,6 +709,39 @@ public class EasyBlockGui extends BasePopupScreen {
         ctx.drawCenteredTextWithShadow(textRenderer, Text.literal(rangeVal),
                 rangeValX + rangeValW / 2, dy + 5, C_TEXT);
         dy += 30;
+
+        // Attack item selector
+        ctx.drawTextWithShadow(textRenderer, Text.literal("Attack item:"),
+                lx + 16, dy, C_TEXT2);
+        dy += 14;
+        MinecraftClient mc2 = MinecraftClient.getInstance();
+        for (int[] ab : attackHotbar) ab[0] = -1;
+        if (mc2.player != null) {
+            int slot = 0;
+            for (int i = 0; i < 9; i++) {
+                ItemStack stack = mc2.player.getInventory().getStack(i);
+                if (stack.isEmpty()) { attackHotbar[i][0] = -1; continue; }
+                int bx = lx + 16 + slot * 22;
+                boolean sel = optAttackItemSlot == i;
+                boolean shov = mx >= bx && mx < bx + 20 && my >= dy && my < dy + 20;
+                RoundedRectRenderer.draw(ctx, bx, dy, 20, 20, 3,
+                        sel ? C_ACCENT : (shov ? C_NAV_ACT : C_NAV_BG));
+                ctx.drawItem(stack, bx + 2, dy + 2);
+                attackHotbar[i][0] = bx; attackHotbar[i][1] = dy;
+                slot++;
+            }
+            dy += 26;
+        }
+
+        // Random CPS toggle
+        int rcRowH = Math.max(aath + 4, 20);
+        ctx.drawTextWithShadow(textRenderer, Text.literal("Random CPS (7–11)"),
+                lx + 16, dy + (rcRowH - 8) / 2, C_TEXT2);
+        int rcTogX = rEdge - aatw, rcTogY = dy + (rcRowH - aath) / 2;
+        ToggleRenderer.draw(ctx, rcTogX, rcTogY, animRandomCps);
+        randomCpsTgBounds[0] = rcTogX; randomCpsTgBounds[1] = rcTogY;
+        randomCpsTgBounds[2] = aatw;   randomCpsTgBounds[3] = aath;
+        dy += rcRowH + 10;
 
         // Footer
         ctx.drawTextWithShadow(textRenderer,
@@ -913,6 +970,7 @@ public class EasyBlockGui extends BasePopupScreen {
         contentH += 28 + 14; // radius cycler
         contentH += nearbyBlockTypes.size() * LIST_ITEM_H + 18; // block list + footer
         contentH += 10 + 18 + rowH + 6; // Hypixel header+Fairy Souls toggle+desc
+        contentH += rowH + 6 + 18; // Hotspot ESP toggle+desc
         int availH = ph - HEADER_H - 18;
         visualsMaxScrollY = Math.max(0, contentH - availH);
         visualsScrollY = Math.min(visualsScrollY, visualsMaxScrollY);
@@ -939,6 +997,19 @@ public class EasyBlockGui extends BasePopupScreen {
         dy += rowH + 6;
         ctx.drawTextWithShadow(textRenderer,
                 Text.literal("Cyan box around Fairy Souls (Armor Stands)"),
+                lx + 16, dy, C_TEXT3);
+        dy += 18;
+
+        animHotspotEsp = Anim.smooth(animHotspotEsp, optHotspotEsp ? 1f : 0f, 20f);
+        ctx.drawTextWithShadow(textRenderer, Text.literal("Hotspot ESP"),
+                lx, dy + (rowH - 8) / 2, C_TEXT);
+        int hsTgX = rEdge - tw, hsTgY = dy + (rowH - th) / 2;
+        ToggleRenderer.draw(ctx, hsTgX, hsTgY, animHotspotEsp);
+        hotspotEspTgBounds[0] = hsTgX; hotspotEspTgBounds[1] = hsTgY;
+        hotspotEspTgBounds[2] = tw;    hotspotEspTgBounds[3] = th;
+        dy += rowH + 6;
+        ctx.drawTextWithShadow(textRenderer,
+                Text.literal("Pink circle on fishing hotspots (Hypixel SkyBlock)"),
                 lx + 16, dy, C_TEXT3);
         dy += 18;
 
@@ -1307,6 +1378,35 @@ public class EasyBlockGui extends BasePopupScreen {
             }
         }
 
+        // Attack item hotbar slots
+        for (int i = 0; i < 9; i++) {
+            if (attackHotbar[i][0] < 0) continue;
+            if (imx >= attackHotbar[i][0] && imx < attackHotbar[i][0] + 20
+                    && imy >= attackHotbar[i][1] && imy < attackHotbar[i][1] + 20) {
+                optAttackItemSlot = (optAttackItemSlot == i) ? -1 : i;
+                syncAutoAttack();
+                return true;
+            }
+        }
+
+        // Random CPS toggle
+        if (randomCpsTgBounds[2] > 0
+                && imx >= randomCpsTgBounds[0] && imx < randomCpsTgBounds[0] + randomCpsTgBounds[2]
+                && imy >= randomCpsTgBounds[1] && imy < randomCpsTgBounds[1] + randomCpsTgBounds[3]) {
+            optRandomCps = !optRandomCps;
+            syncAutoAttack();
+            return true;
+        }
+
+        // Auto Mining toggle
+        if (miningTgBounds[2] > 0
+                && imx >= miningTgBounds[0] && imx < miningTgBounds[0] + miningTgBounds[2]
+                && imy >= miningTgBounds[1] && imy < miningTgBounds[1] + miningTgBounds[3]) {
+            optAutoMining = !optAutoMining;
+            syncAutoMining();
+            return true;
+        }
+
         return false;
     }
 
@@ -1335,6 +1435,13 @@ public class EasyBlockGui extends BasePopupScreen {
         // Fairy Souls ESP toggle
         if (hitTg(imx, imy, fairySoulsEspTgBounds)) {
             optFairySoulsEsp = !optFairySoulsEsp;
+            syncVisuals();
+            return true;
+        }
+
+        // Hotspot ESP toggle
+        if (hitTg(imx, imy, hotspotEspTgBounds)) {
+            optHotspotEsp = !optHotspotEsp;
             syncVisuals();
             return true;
         }
@@ -1562,10 +1669,22 @@ public class EasyBlockGui extends BasePopupScreen {
         AutoAttackManager aam = AutoAttackManager.getInstance();
         aam.setAttackRange(optAttackRange);
         aam.setPriorityMode(optAttackPriority);
+        aam.setAttackItemSlot(optAttackItemSlot);
+        aam.setRandomCps(optRandomCps);
         if (optAutoAttack) {
             aam.enable();
         } else {
             aam.disable();
+        }
+    }
+
+    private void syncAutoMining() {
+        com.example.macromod.manager.AutoMiningManager amm =
+                com.example.macromod.manager.AutoMiningManager.getInstance();
+        if (optAutoMining) {
+            amm.enable();
+        } else {
+            amm.disable();
         }
     }
 
@@ -1575,6 +1694,7 @@ public class EasyBlockGui extends BasePopupScreen {
         cfg.setEntitiesEspEnabled(optEntitiesEsp);
         cfg.setBlockEspEnabled(optBlockEsp);
         cfg.setFairySoulsEspEnabled(optFairySoulsEsp);
+        cfg.setHotspotEspEnabled(optHotspotEsp);
         cfg.setBlockEspRadius(optBlockEspRadius);
         MacroModClient.getConfigManager().save();
     }
