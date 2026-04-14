@@ -137,8 +137,14 @@ public class AutoFishingManager {
     // ── AFK camera jitter ──────────────────────────────────────────────
     private boolean cameraJitter        = false;
     private long    lastJitterMs        = 0L;
-    private long    nextJitterIntervalMs = 5_000L;
-
+    private long    nextJitterIntervalMs = 5_000L;    /** Center yaw of jitter constraint box (set when cast to water). */
+    private float   jitterCenterYaw     = 0f;
+    /** Center pitch of jitter constraint box (set when cast to water). */
+    private float   jitterCenterPitch   = 0f;
+    /** Max angle (degrees) jitter can deviate from center on yaw axis (~5px at 90° FOV). */
+    private static final float JITTER_MAX_YAW_DEV   = 1.2f;
+    /** Max angle (degrees) jitter can deviate from center on pitch axis (~5px at 90° FOV). */
+    private static final float JITTER_MAX_PITCH_DEV = 0.85f;
     // ── Auto Deposit ───────────────────────────────────────────────────
     private boolean  autoDeposit     = false;
     private int      depositPhase    = 0;
@@ -161,6 +167,8 @@ public class AutoFishingManager {
             prevTickPos  = null;
             preCastEntityUUIDs.clear();
             preBiteEntityUUIDs.clear();
+            jitterCenterYaw = 0f;
+            jitterCenterPitch = 0f;
             // Clear any ongoing SmoothAim target set by jitter or other aiming
             var sa = MacroModClient.getSmoothAim();
             if (sa != null) sa.clearTarget();
@@ -276,11 +284,19 @@ public class AutoFishingManager {
                     break;
                 }
 
+                // Initialize jitter constraint box on first enter
+                if (stateStartMs == now || (jitterCenterYaw == 0f && jitterCenterPitch == 0f)) {
+                    jitterCenterYaw   = player.getYaw();
+                    jitterCenterPitch = player.getPitch();
+                }
+
                 // ── AFK camera jitter (anti-AFK detection) ───────────────
                 if (cameraJitter && now - lastJitterMs >= nextJitterIntervalMs) {
-                    float jitterYaw   = player.getYaw()   + (AIM_RAND.nextFloat() - 0.5f) * 4.0f;
-                    float jitterPitch = Math.max(-90f, Math.min(90f,
-                            player.getPitch() + (AIM_RAND.nextFloat() - 0.5f) * 2.5f));
+                    // Apply jitter within 5x5 pixel constraint box around crosshair
+                    float offsetYaw   = (AIM_RAND.nextFloat() - 0.5f) * 2.0f * JITTER_MAX_YAW_DEV;
+                    float offsetPitch = (AIM_RAND.nextFloat() - 0.5f) * 2.0f * JITTER_MAX_PITCH_DEV;
+                    float jitterYaw   = jitterCenterYaw + offsetYaw;
+                    float jitterPitch = Math.max(-90f, Math.min(90f, jitterCenterPitch + offsetPitch));
                     var saJitter = MacroModClient.getSmoothAim();
                     if (saJitter != null) {
                         saJitter.setTarget(directionToPoint(player.getEyePos(), jitterYaw, jitterPitch));
