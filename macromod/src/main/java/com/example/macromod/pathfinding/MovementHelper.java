@@ -1,10 +1,12 @@
 package com.example.macromod.pathfinding;
 
-import com.example.macromod.util.BlockUtils;
+import com.example.macromod.model.MacroConfig;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.network.ClientPlayerEntity;
 import net.minecraft.util.math.BlockPos;
 import net.minecraft.util.math.Vec3d;
+
+import java.util.Random;
 
 /**
  * Handles smooth camera rotation and movement toward block waypoints.
@@ -18,17 +20,22 @@ import net.minecraft.util.math.Vec3d;
 public class MovementHelper {
 
     // ── Rotation constants ────────────────────────────────────────
-    /** Lerp factor used when computing the desired yaw for {@link SmoothAim}. */
-    private static final float MOVE_YAW_LERP   = 0.45f;
-    /** Lerp factor for precision look-at (mining aim). Slower = smoother. */
-    private static final float AIM_LERP        = 0.12f;
-    /** Minimum degrees rotated per tick; prevents infinite approach at tiny angles. */
-    private static final float MIN_STEP_DEG    = 1.0f;
     /**
      * Player sprints only when facing within this many degrees of its destination.
      * Outside this cone it walks so it can turn without overshooting the waypoint.
      */
     private static final float SPRINT_YAW_THRESHOLD = 35f;
+
+    // ── Steering constants (blocks / tick) ────────────────────────
+    private static final double DEFAULT_MAX_SPEED = 0.23;
+    private static final double DEFAULT_MAX_ACCEL = 0.18;
+    private static final double DEFAULT_SLOWING_RADIUS = 2.0;
+    private static final double DEFAULT_INPUT_THRESHOLD = 0.05;
+
+    // ── Humanization (disabled by default for deterministic runs) ─
+    private static final boolean DEFAULT_ENABLE_NOISE = false;
+    private static final double DEFAULT_NOISE_AMPLITUDE = 0.05;
+    private static final long NOISE_REFRESH_MS = 120L;
 
     // ── Waypoint arrival ──────────────────────────────────────
     // 0.35 block radius: tight enough to force the player near block centre
@@ -37,11 +44,31 @@ public class MovementHelper {
     private static final double WAYPOINT_ARRIVE_DY        = 0.5;
 
     // ── Jump / stuck detection ───────────────────────────────────
-    private static final long   STUCK_JUMP_MS             = 300L;
-    private static final double STUCK_PROGRESS_THRESHOLD  = 0.01;
+    private static final long   STUCK_JUMP_MS             = 900L;
+    private static final double STUCK_PROGRESS_THRESHOLD  = 0.0025;
 
     private Vec3d lastStuckPos  = null;
     private long  stuckStart    = -1L;
+
+    // ── Steering state ────────────────────────────────────────────
+    private Vec3d steeringVelocity = Vec3d.ZERO;
+    private Vec3d noiseOffset = Vec3d.ZERO;
+    private long nextNoiseRefreshAt = 0L;
+    private final Random noiseRandom = new Random();
+
+    // ── Steering profile (per-macro, with sane defaults) ───────────
+    private boolean steeringEnabled = true;
+    private double maxSpeed = DEFAULT_MAX_SPEED;
+    private double maxAccel = DEFAULT_MAX_ACCEL;
+    private double slowingRadius = DEFAULT_SLOWING_RADIUS;
+    private double inputThreshold = DEFAULT_INPUT_THRESHOLD;
+    private boolean noiseEnabled = DEFAULT_ENABLE_NOISE;
+    private double noiseAmplitude = DEFAULT_NOISE_AMPLITUDE;
+
+    // ── Debug telemetry ─────────────────────────────────────────────
+    private float lastYawDelta = 0f;
+    private double lastDesiredSpeed = 0.0;
+    private double lastCurrentSpeed = 0.0;
 
     // ── Camera ───────────────────────────────────────────────────
     private final SmoothAim smoothAim;
@@ -99,76 +126,22 @@ public class MovementHelper {
      * The camera target is sent to {@link CameraController} for 100 Hz async lerp.</p>
      */
     public void moveTowards(ClientPlayerEntity player, BlockPos target) {
-        Vec3d center  = Vec3d.ofCenter(target);
-        Vec3d playerPos = new Vec3d(player.getX(), player.getY(), player.getZ());
-        float wantYaw = yawToward(playerPos, center);
-        float dYaw    = wrapAngle(wantYaw - player.getYaw());
+        moveTowards(player, Vec3d.ofCenter(target));
+    }
 
-        // Calculate distance to waypoint
-        double dx = playerPos.x - center.x;
-        double dz = playerPos.z - center.z;
-        double distSq = dx * dx + dz * dz;
-        
-        // When very close to waypoint, tighten angle tolerance to reduce oscillation
-        // This especially helps with diagonal movements where small angles cause key-toggle
-        double decompositionThreshold = distSq < 0.2 * 0.2 ? 0.15 : 0.1;
-
-        // Aim at eye height toward the waypoint — not at the ground block
-        Vec3d aimTarget = new Vec3d(target.getX() + 0.5, player.getEyePos().y, target.getZ() + 0.5);
-        smoothAim.setTarget(aimTarget);
-
-        MinecraftClient mc = MinecraftClient.getInstance();
-        if (mc.options == null) return;
-
-        // Decompose movement direction based on angle between current facing and target
-        double rad    = Math.toRadians(dYaw);
-        double fwd    = Math.cos(rad);   // +1 = straight ahead, -1 = straight behind
-        double strafe = Math.sin(rad);   // +1 = pure right, -1 = pure left
-
-        mc.options.forwardKey.setPressed(fwd    >  decompositionThreshold);
-        mc.options.backKey.setPressed   (fwd    < -decompositionThreshold);
-        mc.options.rightKey.setPressed  (strafe >  decompositionThreshold);
-        mc.options.leftKey.setPressed   (strafe < -decompositionThreshold);
-
-        // Sprint only when heading is roughly forward (within SPRINT_YAW_THRESHOLD)
-        player.setSprinting(Math.abs(dYaw) < SPRINT_YAW_THRESHOLD);
+    /**
+     * Steering-based movement toward an arbitrary target point.
+     * Uses arrival slowdown + acceleration toward desired velocity.
+     */
+    public void moveTowards(ClientPlayerEntity player, Vec3d targetPoint) {
+        applySteeringMovement(player, targetPoint, true);
     }
 
     /**
      * Moves the player forward toward the center of the target block.
      */
     public void forwardToBlock(ClientPlayerEntity player, BlockPos target) {
-        Vec3d center  = Vec3d.ofCenter(target);
-        Vec3d playerPos = new Vec3d(player.getX(), player.getY(), player.getZ());
-        float wantYaw = yawToward(playerPos, center);
-        float dYaw    = wrapAngle(wantYaw - player.getYaw());
-
-        // Calculate distance to block
-        double dx = playerPos.x - center.x;
-        double dz = playerPos.z - center.z;
-        double distSq = dx * dx + dz * dz;
-        
-        // When very close to target, tighten angle tolerance for diagonal stability
-        double decompositionThreshold = distSq < 0.2 * 0.2 ? 0.15 : 0.1;
-
-        // Aim at eye height toward the block — not at the ground
-        Vec3d aimTarget = new Vec3d(target.getX() + 0.5, player.getEyePos().y, target.getZ() + 0.5);
-        smoothAim.setTarget(aimTarget);
-
-        MinecraftClient mc = MinecraftClient.getInstance();
-        if (mc.options == null) return;
-
-        // Decompose movement direction based on angle between current facing and target
-        double rad    = Math.toRadians(dYaw);
-        double fwd    = Math.cos(rad);
-        double strafe = Math.sin(rad);
-
-        mc.options.forwardKey.setPressed(fwd    >  decompositionThreshold);
-        mc.options.backKey.setPressed   (fwd    < -decompositionThreshold);
-        mc.options.rightKey.setPressed  (strafe >  decompositionThreshold);
-        mc.options.leftKey.setPressed   (strafe < -decompositionThreshold);
-
-        player.setSprinting(Math.abs(dYaw) < SPRINT_YAW_THRESHOLD);
+        applySteeringMovement(player, Vec3d.ofCenter(target), false);
     }
 
     /**
@@ -228,17 +201,22 @@ public class MovementHelper {
 
         // 2. Horizontally stuck → try a jump to dislodge
         Vec3d pos = new Vec3d(player.getX(), player.getY(), player.getZ());
+        Vec3d nextCenter = Vec3d.ofCenter(nextWaypoint);
+        double toNextX = pos.x - nextCenter.x;
+        double toNextZ = pos.z - nextCenter.z;
+        double distToNextSq = toNextX * toNextX + toNextZ * toNextZ;
         if (lastStuckPos == null) {
             lastStuckPos = pos;
             stuckStart   = System.currentTimeMillis();
         } else {
             double dx = pos.x - lastStuckPos.x;
             double dz = pos.z - lastStuckPos.z;
-            if (dx * dx + dz * dz > STUCK_PROGRESS_THRESHOLD) {
+            double movedSq = dx * dx + dz * dz;
+            if (movedSq > STUCK_PROGRESS_THRESHOLD) {
                 // Making progress — reset
                 lastStuckPos = pos;
                 stuckStart   = System.currentTimeMillis();
-            } else if (System.currentTimeMillis() - stuckStart > STUCK_JUMP_MS) {
+            } else if (distToNextSq > 1.2 * 1.2 && System.currentTimeMillis() - stuckStart > STUCK_JUMP_MS) {
                 if (player.isOnGround()) {
                     jump = true;
                 }
@@ -256,12 +234,58 @@ public class MovementHelper {
         stuckStart   = -1L;
     }
 
+    public void resetSteeringState() {
+        steeringVelocity = Vec3d.ZERO;
+        noiseOffset = Vec3d.ZERO;
+        nextNoiseRefreshAt = 0L;
+        lastYawDelta = 0f;
+        lastDesiredSpeed = 0.0;
+        lastCurrentSpeed = 0.0;
+    }
+
+    /**
+     * Applies per-macro steering settings.
+     */
+    public void applyMacroConfig(MacroConfig cfg) {
+        if (cfg == null) {
+            steeringEnabled = true;
+            maxSpeed = DEFAULT_MAX_SPEED;
+            maxAccel = DEFAULT_MAX_ACCEL;
+            slowingRadius = DEFAULT_SLOWING_RADIUS;
+            inputThreshold = DEFAULT_INPUT_THRESHOLD;
+            noiseEnabled = DEFAULT_ENABLE_NOISE;
+            noiseAmplitude = DEFAULT_NOISE_AMPLITUDE;
+            return;
+        }
+
+        steeringEnabled = cfg.isSteeringEnabled();
+        maxSpeed = safeRange(cfg.getSteeringMaxSpeed(), 0.08, 0.40, DEFAULT_MAX_SPEED);
+        maxAccel = safeRange(cfg.getSteeringAcceleration(), 0.05, 0.50, DEFAULT_MAX_ACCEL);
+        slowingRadius = safeRange(cfg.getSteeringSlowingRadius(), 0.5, 6.0, DEFAULT_SLOWING_RADIUS);
+        inputThreshold = DEFAULT_INPUT_THRESHOLD;
+        noiseEnabled = cfg.isSteeringNoiseEnabled();
+        noiseAmplitude = safeRange(cfg.getSteeringNoiseAmplitude(), 0.0, 0.20, DEFAULT_NOISE_AMPLITUDE);
+    }
+
+    public float getLastYawDelta() {
+        return lastYawDelta;
+    }
+
+    public double getLastDesiredSpeed() {
+        return lastDesiredSpeed;
+    }
+
+    public double getLastCurrentSpeed() {
+        return lastCurrentSpeed;
+    }
+
     // ═════════════════════════════════════════════════════════════
     // Release
     // ═════════════════════════════════════════════════════════════
 
     public void releaseAllInputs() {
         resetJumpState();
+        resetSteeringState();
         MinecraftClient mc = MinecraftClient.getInstance();
         if (mc.options != null) {
             mc.options.forwardKey.setPressed(false);
@@ -276,24 +300,122 @@ public class MovementHelper {
         smoothAim.clearTarget();
     }
 
+    private void applySteeringMovement(ClientPlayerEntity player, Vec3d baseTarget, boolean allowSprint) {
+        MinecraftClient mc = MinecraftClient.getInstance();
+        if (mc.options == null) return;
+
+        Vec3d playerPos = new Vec3d(player.getX(), player.getY(), player.getZ());
+        Vec3d target = applyNoise(baseTarget);
+
+        double dx = target.x - playerPos.x;
+        double dz = target.z - playerPos.z;
+        double distSq = dx * dx + dz * dz;
+        if (distSq < 1e-6) {
+            steeringVelocity = steeringVelocity.multiply(0.6, 0.0, 0.6);
+            mc.options.forwardKey.setPressed(false);
+            mc.options.backKey.setPressed(false);
+            mc.options.leftKey.setPressed(false);
+            mc.options.rightKey.setPressed(false);
+            player.setSprinting(false);
+            lastYawDelta = 0f;
+            lastDesiredSpeed = 0.0;
+            lastCurrentSpeed = 0.0;
+            return;
+        }
+
+        double distance = Math.sqrt(distSq);
+        Vec3d direction = new Vec3d(dx / distance, 0.0, dz / distance);
+
+        if (!steeringEnabled) {
+            Vec3d aimTarget = new Vec3d(target.x, player.getEyePos().y, target.z);
+            smoothAim.setTarget(aimTarget);
+
+            float wantYaw = yawToward(playerPos, target);
+            float dYaw = wrapAngle(wantYaw - player.getYaw());
+            lastYawDelta = dYaw;
+
+            double rad = Math.toRadians(dYaw);
+            double fwd = Math.cos(rad);
+            double strafe = Math.sin(rad);
+
+            mc.options.forwardKey.setPressed(fwd > inputThreshold);
+            mc.options.backKey.setPressed(fwd < -inputThreshold);
+            mc.options.rightKey.setPressed(strafe > inputThreshold);
+            mc.options.leftKey.setPressed(strafe < -inputThreshold);
+
+            player.setSprinting(allowSprint && Math.abs(dYaw) < SPRINT_YAW_THRESHOLD);
+            steeringVelocity = Vec3d.ZERO;
+            lastDesiredSpeed = maxSpeed;
+            lastCurrentSpeed = 0.0;
+            return;
+        }
+
+        double speedScale = 1.0;
+        if (distance < slowingRadius) {
+            speedScale = clamp((float) (distance / slowingRadius), 0.18f, 1.0f);
+        }
+
+        Vec3d desiredVelocity = direction.multiply(maxSpeed * speedScale);
+        Vec3d steering = desiredVelocity.subtract(steeringVelocity).multiply(maxAccel);
+        steeringVelocity = steeringVelocity.add(steering);
+        steeringVelocity = clampHorizontalLength(steeringVelocity, maxSpeed);
+
+        Vec3d aimTarget = new Vec3d(target.x, player.getEyePos().y, target.z);
+        smoothAim.setTarget(aimTarget);
+
+        float wantYaw = yawToward(playerPos, target);
+        float dYaw = wrapAngle(wantYaw - player.getYaw());
+        lastYawDelta = dYaw;
+
+        double yawRad = Math.toRadians(player.getYaw());
+        double forwardX = -Math.sin(yawRad);
+        double forwardZ = Math.cos(yawRad);
+        double rightX = Math.cos(yawRad);
+        double rightZ = Math.sin(yawRad);
+
+        double fwd = steeringVelocity.x * forwardX + steeringVelocity.z * forwardZ;
+        double strafe = steeringVelocity.x * rightX + steeringVelocity.z * rightZ;
+
+        mc.options.forwardKey.setPressed(fwd > inputThreshold);
+        mc.options.backKey.setPressed(fwd < -inputThreshold);
+        mc.options.rightKey.setPressed(strafe > inputThreshold);
+        mc.options.leftKey.setPressed(strafe < -inputThreshold);
+
+        boolean canSprint = allowSprint
+            && Math.abs(dYaw) < SPRINT_YAW_THRESHOLD
+            && distance > 1.4
+            && fwd > 0.12;
+        player.setSprinting(canSprint);
+
+        lastDesiredSpeed = desiredVelocity.horizontalLength();
+        lastCurrentSpeed = steeringVelocity.horizontalLength();
+    }
+
+    private Vec3d applyNoise(Vec3d target) {
+        if (!noiseEnabled) return target;
+
+        long now = System.currentTimeMillis();
+        if (now >= nextNoiseRefreshAt) {
+            nextNoiseRefreshAt = now + NOISE_REFRESH_MS;
+            double nx = (noiseRandom.nextDouble() - 0.5) * noiseAmplitude;
+            double nz = (noiseRandom.nextDouble() - 0.5) * noiseAmplitude;
+            noiseOffset = new Vec3d(nx, 0.0, nz);
+        }
+        return target.add(noiseOffset);
+    }
+
+    private static Vec3d clampHorizontalLength(Vec3d v, double maxLen) {
+        double lenSq = v.x * v.x + v.z * v.z;
+        if (lenSq <= maxLen * maxLen) return v;
+        double len = Math.sqrt(lenSq);
+        if (len < 1e-8) return Vec3d.ZERO;
+        double scale = maxLen / len;
+        return new Vec3d(v.x * scale, 0.0, v.z * scale);
+    }
+
     // ═════════════════════════════════════════════════════════════
     // Internal math helpers
     // ═════════════════════════════════════════════════════════════
-
-    /**
-     * Lerp step: moves {@code diff} degrees closer by {@code factor}, but
-     * enforces a minimum step so the camera doesn't asymptotically stall, and
-     * never overshoots zero.
-     */
-    private static float lerpStep(float diff, float factor) {
-        if (Math.abs(diff) < 0.0005f) return 0f;
-        float step = diff * factor;
-        // Enforce minimum so tiny angles snap cleanly
-        if (Math.abs(step) < MIN_STEP_DEG) {
-            step = Math.copySign(Math.min(MIN_STEP_DEG, Math.abs(diff)), diff);
-        }
-        return step;
-    }
 
     /** Yaw angle (degrees) from {@code from} looking toward {@code to}. */
     private static float yawToward(Vec3d from, Vec3d to) {
@@ -319,6 +441,12 @@ public class MovementHelper {
 
     private static float clamp(float v, float lo, float hi) {
         return Math.max(lo, Math.min(hi, v));
+    }
+
+    private static double safeRange(double value, double min, double max, double fallback) {
+        if (!Double.isFinite(value)) return fallback;
+        if (value < min || value > max) return fallback;
+        return value;
     }
 }
 

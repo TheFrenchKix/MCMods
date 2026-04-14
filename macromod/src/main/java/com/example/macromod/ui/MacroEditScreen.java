@@ -64,11 +64,13 @@ public class MacroEditScreen extends BasePopupScreen {
     private int     editAttackCPS, editMiningDelay, editMoveTimeout;
     private float   editArrivalRadius;
     private boolean editAttackEnabled, editAttackWlOnly;
+    private boolean editSteeringEnabled, editSteeringNoiseEnabled;
+    private double  editSteeringMaxSpeed, editSteeringAcceleration, editSteeringSlowingRadius, editSteeringNoiseAmplitude;
     private final List<String> editAttackWl = new ArrayList<>();
     private int     editAttackRange;
 
     // ── Toggle animations ─────────────────────────────────────────────
-    private final float[] tgAnim = new float[8];
+    private final float[] tgAnim = new float[10];
 
     // ── Left panel scroll ─────────────────────────────────────────────
     private int leftScroll    = 0;
@@ -83,8 +85,8 @@ public class MacroEditScreen extends BasePopupScreen {
     private int stepScroll = 0, selStep = -1;
 
     // ── Hit-area caches (set during render, read during click) ────────
-    private final int[][] tgBounds  = new int[8][4];  // [idx][x,y,w,h], w<0 = inactive
-    private final int[][] cycBounds = new int[4][4];  // [idx][lbx,rbx,y, active?]
+    private final int[][] tgBounds  = new int[10][4];  // [idx][x,y,w,h], w<0 = inactive
+    private final int[][] cycBounds = new int[8][4];  // [idx][lbx,rbx,y, active?]
     private int atkRngLbx = -1, atkRngRbx = -1, atkRngY = -1;
     private int stepBtnY;
     private final int[] stepBtnX = new int[4];
@@ -121,9 +123,16 @@ public class MacroEditScreen extends BasePopupScreen {
         editRandomAttackCps = c.isRandomAttackCps();
         editAttackWl.addAll(c.getAttackWhitelist());
         editAttackRange   = c.getAttackRange();
+        editSteeringEnabled = c.isSteeringEnabled();
+        editSteeringMaxSpeed = c.getSteeringMaxSpeed();
+        editSteeringAcceleration = c.getSteeringAcceleration();
+        editSteeringSlowingRadius = c.getSteeringSlowingRadius();
+        editSteeringNoiseEnabled = c.isSteeringNoiseEnabled();
+        editSteeringNoiseAmplitude = c.getSteeringNoiseAmplitude();
         boolean[] v = {editLoop, editSkipMismatch, editAttackDanger, editOnlyGround,
-                editLockCam, editAttackEnabled, editAttackWlOnly, editRandomAttackCps};
-        for (int i = 0; i < 8; i++) tgAnim[i] = v[i] ? 1f : 0f;
+            editLockCam, editAttackEnabled, editAttackWlOnly, editRandomAttackCps,
+            editSteeringEnabled, editSteeringNoiseEnabled};
+        for (int i = 0; i < 10; i++) tgAnim[i] = v[i] ? 1f : 0f;
     }
 
     // ═════════════════════════════════════════════════════════════════
@@ -166,8 +175,9 @@ public class MacroEditScreen extends BasePopupScreen {
     protected void drawScreen(DrawContext ctx, int mx, int my, float delta) {
         // Animate toggles per-frame
         boolean[] vals = {editLoop, editSkipMismatch, editAttackDanger, editOnlyGround,
-                editLockCam, editAttackEnabled, editAttackWlOnly, editRandomAttackCps};
-        for (int i = 0; i < 8; i++) tgAnim[i] = Anim.smooth(tgAnim[i], vals[i] ? 1f : 0f, 20f);
+            editLockCam, editAttackEnabled, editAttackWlOnly, editRandomAttackCps,
+            editSteeringEnabled, editSteeringNoiseEnabled};
+        for (int i = 0; i < 10; i++) tgAnim[i] = Anim.smooth(tgAnim[i], vals[i] ? 1f : 0f, 20f);
 
         // Reset hit caches
         for (int[] b : tgBounds)  b[2] = -1;
@@ -244,6 +254,7 @@ public class MacroEditScreen extends BasePopupScreen {
         sy = toggle(ctx, mx, my, x, re, sy, "Skip Mismatch",  tgAnim[1], 1) + ROW_GAP;
         sy = toggle(ctx, mx, my, x, re, sy, "Attack Danger",  tgAnim[2], 2) + ROW_GAP;
         sy = toggle(ctx, mx, my, x, re, sy, "Only Ground",    tgAnim[3], 3) + ROW_GAP;
+        sy = toggle(ctx, mx, my, x, re, sy, "Steering Move",  tgAnim[8], 8) + ROW_GAP;
         sy = toggle(ctx, mx, my, x, re, sy, "Lock Camera",    tgAnim[4], 4) + 8;
 
         // Timing
@@ -252,13 +263,24 @@ public class MacroEditScreen extends BasePopupScreen {
         sy = cycler(ctx, mx, my, x, re, sy, "Move Timeout",   editMoveTimeout + " ms",               1) + ROW_GAP;
         sy = cycler(ctx, mx, my, x, re, sy, "Arrival Radius", String.format("%.1f blk", editArrivalRadius), 2) + 8;
 
+        // Movement steering
+        sy = section(ctx, x, re, sy, "Movement", EasyBlockGui.C_ACCENT);
+        sy = cycler(ctx, mx, my, x, re, sy, "Max Speed", String.format("%.2f blk/t", editSteeringMaxSpeed), 3) + ROW_GAP;
+        sy = cycler(ctx, mx, my, x, re, sy, "Acceleration", String.format("%.2f", editSteeringAcceleration), 4) + ROW_GAP;
+        sy = cycler(ctx, mx, my, x, re, sy, "Slow Radius", String.format("%.1f blk", editSteeringSlowingRadius), 5) + ROW_GAP;
+        sy = toggle(ctx, mx, my, x, re, sy, "Steering Noise", tgAnim[9], 9) + ROW_GAP;
+        if (editSteeringNoiseEnabled) {
+            sy = cycler(ctx, mx, my, x, re, sy, "Noise Amp", String.format("%.2f blk", editSteeringNoiseAmplitude), 6) + ROW_GAP;
+        }
+        sy += 4;
+
         // Attack
         sy = section(ctx, x, re, sy, "Attack", EasyBlockGui.C_DANGER);
         sy = toggle(ctx, mx, my, x, re, sy, "Enable Attack", tgAnim[5], 5) + ROW_GAP;
 
         if (editAttackEnabled) {
             if (editAttackDanger) {
-                sy = cycler(ctx, mx, my, x, re, sy, "Attack CPS", editAttackCPS + " CPS", 3) + ROW_GAP;
+                sy = cycler(ctx, mx, my, x, re, sy, "Attack CPS", editAttackCPS + " CPS", 7) + ROW_GAP;
                 sy = toggle(ctx, mx, my, x, re, sy, "Random CPS (7\u201311)", tgAnim[7], 7) + ROW_GAP;
             }
             sy = toggle(ctx, mx, my, x, re, sy, "Whitelist only", tgAnim[6], 6) + ROW_GAP;
@@ -513,7 +535,7 @@ public class MacroEditScreen extends BasePopupScreen {
         }
 
         // Toggles
-        for (int i = 0; i < 8; i++) {
+        for (int i = 0; i < 10; i++) {
             int[] b = tgBounds[i];
             if (b[2] > 0 && hit(imx, imy, b[0], b[1], b[2], b[3])) {
                 switch (i) {
@@ -525,13 +547,15 @@ public class MacroEditScreen extends BasePopupScreen {
                     case 5 -> editAttackEnabled = !editAttackEnabled;
                     case 6 -> editAttackWlOnly = !editAttackWlOnly;
                     case 7 -> editRandomAttackCps = !editRandomAttackCps;
+                    case 8 -> editSteeringEnabled = !editSteeringEnabled;
+                    case 9 -> editSteeringNoiseEnabled = !editSteeringNoiseEnabled;
                 }
                 return true;
             }
         }
 
         // Cyclers
-        for (int i = 0; i < 4; i++) {
+        for (int i = 0; i < 8; i++) {
             int[] c = cycBounds[i];
             if (c[3] == 0) continue;
             if (imy >= c[2] && imy < c[2] + 18) {
@@ -648,12 +672,22 @@ public class MacroEditScreen extends BasePopupScreen {
             case 0 -> editMiningDelay  = wrap(editMiningDelay  + dir * 50,   50,   2000);
             case 1 -> editMoveTimeout  = wrap(editMoveTimeout  + dir * 500,  500,  60000);
             case 2 -> { int s = Math.round(editArrivalRadius / 0.5f) + dir; editArrivalRadius = wrap(s, 1, 10) * 0.5f; }
-            case 3 -> editAttackCPS    = wrap(editAttackCPS    + dir,        1,    20);
+            case 3 -> editSteeringMaxSpeed = wrapStep(editSteeringMaxSpeed + dir * 0.01, 0.08, 0.40);
+            case 4 -> editSteeringAcceleration = wrapStep(editSteeringAcceleration + dir * 0.01, 0.05, 0.50);
+            case 5 -> editSteeringSlowingRadius = wrapStep(editSteeringSlowingRadius + dir * 0.1, 0.5, 6.0);
+            case 6 -> editSteeringNoiseAmplitude = wrapStep(editSteeringNoiseAmplitude + dir * 0.01, 0.0, 0.20);
+            case 7 -> editAttackCPS    = wrap(editAttackCPS    + dir,        1,    20);
         }
     }
 
     private static int wrap(int v, int lo, int hi) {
         if (v < lo) return hi; if (v > hi) return lo; return v;
+    }
+
+    private static double wrapStep(double v, double lo, double hi) {
+        if (v < lo) return hi;
+        if (v > hi) return lo;
+        return v;
     }
 
     private void applyChanges() {
@@ -666,6 +700,12 @@ public class MacroEditScreen extends BasePopupScreen {
         c.setOnlyGround(editOnlyGround);   c.setLockCrosshair(editLockCam);
         c.setMiningDelay(editMiningDelay);  c.setMoveTimeout(editMoveTimeout);
         c.setArrivalRadius(editArrivalRadius); c.setAttackEnabled(editAttackEnabled);
+        c.setSteeringEnabled(editSteeringEnabled);
+        c.setSteeringMaxSpeed(editSteeringMaxSpeed);
+        c.setSteeringAcceleration(editSteeringAcceleration);
+        c.setSteeringSlowingRadius(editSteeringSlowingRadius);
+        c.setSteeringNoiseEnabled(editSteeringNoiseEnabled);
+        c.setSteeringNoiseAmplitude(editSteeringNoiseAmplitude);
         c.setAttackWhitelistOnly(editAttackWlOnly); c.setAttackWhitelist(editAttackWl);
         c.setAttackRange(editAttackRange);
         MacroModClient.getManager().save(macro);

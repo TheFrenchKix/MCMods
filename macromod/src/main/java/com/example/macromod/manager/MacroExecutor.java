@@ -41,6 +41,8 @@ import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Random;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
 /**
  * State-machine-based macro executor. Handles pathfinding, movement, and block mining.
@@ -59,10 +61,20 @@ public class MacroExecutor {
     private static final Logger LOGGER = LoggerFactory.getLogger("macromod");
     private final MovementHelper movementHelper;
     private final PathFinder fallbackPathFinder = new PathFinder();
+    private final ExecutorService pathfindingExecutor = Executors.newSingleThreadExecutor(r -> {
+        Thread t = new Thread(r, "macromod-pathfinding");
+        t.setDaemon(true);
+        return t;
+    });
 
     // ─── Debug throttle ─────────────────────────────────────────
     private long lastDebugMs = 0L;
     private static final long DEBUG_INTERVAL_MS = 500L; // log at most every 500 ms
+    private static final double LOOKAHEAD_CORNER_BLEND = 0.20;
+    private static final double LOOKAHEAD_STRAIGHT_BLEND = 0.62;
+    private static final double LOOKAHEAD_DEFAULT_BLEND = 0.45;
+    private static final long MOVING_STUCK_TIMEOUT_MS = 4500L;
+    private static final double MOVING_MIN_PROGRESS = 0.35;
 
     // ─── End-of-path centering ──────────────────────────────────
     /** True when at destination but still centering before MINING */
@@ -85,6 +97,12 @@ public class MacroExecutor {
     private List<List<BlockPos>> precomputedPaths;
     private int precomputeIndex;
     private BlockPos precomputeFromPos;
+    /** True while the background thread is computing a path for precomputeIndex. */
+    private volatile boolean precomputeBusy = false;
+    /** True while the background thread is pipelining the NEXT step's path. */
+    private volatile boolean pipelineBusy = false;
+    /** The step index currently being pipelined (-1 = none). */
+    private volatile int pipelineStepIndex = -1;
 
     // ─── Mining ─────────────────────────────────────────────────
     private boolean isMiningBlock;
@@ -93,7 +111,7 @@ public class MacroExecutor {
     /** System time when aimLocked first became true. -1 when not locked. */
     private long aimLockedAtMs = -1L;
     /** Milliseconds to wait after crosshair confirms on block before pressing the attack key. */
-    private static final long MINING_CLICK_DWELL_MS = 130L;
+    private static final long MINING_CLICK_DWELL_MS = 60L;
     private long lastMineTime;
     private static final Random MINE_RAND = new Random();
 
@@ -124,6 +142,7 @@ public class MacroExecutor {
     private Vec3d attackChaseLastPos  = null;
     private long  attackChaseStuckMs  = -1L;
     private boolean attackChaseJumped = false;
+    private long attackLastJumpMs = -1L;
 
     // ─── Entity elimination mode (attackDanger) ─────────────────
     private boolean isEliminatingEnemies = false;
@@ -141,7 +160,7 @@ public class MacroExecutor {
     /** Switch strafe direction after this many ms. */
     private static final long STRAFE_SWITCH_MS  = 700L;
     /** Give up and skip the block after this many ms of strafing. */
-    private static final long STRAFE_GIVE_UP_MS = 2500L;
+    private static final long STRAFE_GIVE_UP_MS = 500L;
 
     // ─── Chunk loading ──────────────────────────────────────────
     private long chunkWaitStartMs = -1L;
@@ -181,9 +200,7 @@ public class MacroExecutor {
 
     public MacroExecutor(SmoothAim smoothAim) {
         this.movementHelper = new MovementHelper(smoothAim);
-        // Enable debug logging for pathfinding
-        this.fallbackPathFinder.setDebugLogging(true);
-        LOGGER.info("MacroExecutor initialized with debug pathfinding enabled");
+        LOGGER.info("MacroExecutor initialized");
     }
 
     /**
@@ -313,6 +330,9 @@ public class MacroExecutor {
         currentPath = null;
         precomputedPaths = null;
         precomputeFromPos = null;
+        precomputeBusy = false;
+        pipelineBusy = false;
+        pipelineStepIndex = -1;
         sendMessage("macromod.chat.macro_stopped", Formatting.YELLOW);
         LOGGER.info("Macro stopped");
     }
@@ -398,17 +418,38 @@ public class MacroExecutor {
             LOGGER.info("[MacroExecutor] Paused for AutoAttack target");
         }
         if (!aamHasTarget && pausedForAutoAttack) {
-            // Target cleared — resume macro with fresh pathfinding
+            // Target cleared — resume macro, try snapping to existing path first
             pausedForAutoAttack = false;
             if (state == MacroState.MOVING || state == MacroState.PATHFINDING
                     || state == MacroState.MINING || state == MacroState.NEXT_STEP) {
-                currentPath = null;
-                currentPathIndex = 0;
-                moveStartMs = System.currentTimeMillis();
-                stuckSince  = -1L;
-                lastPosition = new Vec3d(player.getX(), player.getY(), player.getZ());
-                state = MacroState.PATHFINDING;
-                LOGGER.info("[MacroExecutor] Resumed after AutoAttack, re-pathfinding");
+
+                // Try position snapping: find nearest point on existing path
+                List<BlockPos> existingPath = (precomputedPaths != null && currentStepIndex < precomputedPaths.size())
+                        ? precomputedPaths.get(currentStepIndex) : null;
+                int snapIdx = snapToPath(player, existingPath);
+
+                if (snapIdx >= 0 && existingPath != null) {
+                    // Snap succeeded — resume from the nearest path node
+                    currentPath = existingPath;
+                    currentPathIndex = snapIdx;
+                    moveStartMs = System.currentTimeMillis();
+                    stuckSince  = -1L;
+                    lastPosition = new Vec3d(player.getX(), player.getY(), player.getZ());
+                    state = MacroState.MOVING;
+                    LOGGER.info("[MacroExecutor] Resumed after AutoAttack, snapped to path index {}", snapIdx);
+                } else {
+                    // Can't snap — invalidate and re-pathfind from scratch
+                    currentPath = null;
+                    currentPathIndex = 0;
+                    if (precomputedPaths != null && currentStepIndex < precomputedPaths.size()) {
+                        precomputedPaths.set(currentStepIndex, null);
+                    }
+                    moveStartMs = System.currentTimeMillis();
+                    stuckSince  = -1L;
+                    lastPosition = new Vec3d(player.getX(), player.getY(), player.getZ());
+                    state = MacroState.PATHFINDING;
+                    LOGGER.info("[MacroExecutor] Resumed after AutoAttack, re-pathfinding from {}", player.getBlockPos());
+                }
             }
         }
         if (pausedForAutoAttack) {
@@ -419,7 +460,7 @@ public class MacroExecutor {
         boolean isDuringMacro = state != MacroState.IDLE && state != MacroState.COMPLETED && state != MacroState.ERROR;
         if (isDuringMacro && currentMacro.getConfig().isAttackDanger()) {
             // Check if enemies are nearby
-            boolean hasEnemiesNearby = hasEntitiesInRange(player, world, currentMacro.getConfig());
+            boolean hasEnemiesNearby = hasEntitiesInRange(player, world, currentMacro.getConfig(), true);
             
             if (hasEnemiesNearby && !isEliminatingEnemies) {
                 // Enter entity elimination mode — fully cancel current route
@@ -438,20 +479,39 @@ public class MacroExecutor {
 
         // Check if we should exit entity elimination mode
         if (isEliminatingEnemies) {
-            boolean stillHasEnemies = hasEntitiesInRange(player, world, currentMacro.getConfig());
+            boolean stillHasEnemies = hasEntitiesInRange(player, world, currentMacro.getConfig(), true);
             if (!stillHasEnemies) {
-                // Exit entity elimination mode — re-pathfind from current position
+                // Exit entity elimination mode — try snap/splice before full repath
                 isEliminatingEnemies = false;
-                LOGGER.info("All entities eliminated. Re-pathfinding from {}", player.getBlockPos());
                 attackTarget = null;
                 attackChaseStartMs = -1L;
-                // Force fresh pathfinding rather than restoring a stale saved path
-                currentPath = null;
-                currentPathIndex = 0;
-                moveStartMs = System.currentTimeMillis();
-                stuckSince  = -1L;
-                lastPosition = new Vec3d(player.getX(), player.getY(), player.getZ());
-                state = MacroState.PATHFINDING;
+
+                List<BlockPos> existingPath = (precomputedPaths != null && currentStepIndex < precomputedPaths.size())
+                        ? precomputedPaths.get(currentStepIndex) : null;
+                int snapIdx = snapToPath(player, existingPath);
+
+                if (snapIdx >= 0 && existingPath != null) {
+                    // Snap to nearest path node
+                    currentPath = existingPath;
+                    currentPathIndex = snapIdx;
+                    moveStartMs = System.currentTimeMillis();
+                    stuckSince  = -1L;
+                    lastPosition = new Vec3d(player.getX(), player.getY(), player.getZ());
+                    state = MacroState.MOVING;
+                    LOGGER.info("Enemies eliminated. Snapped to path index {} from {}", snapIdx, player.getBlockPos());
+                } else {
+                    // Full repath
+                    currentPath = null;
+                    currentPathIndex = 0;
+                    if (precomputedPaths != null && currentStepIndex < precomputedPaths.size()) {
+                        precomputedPaths.set(currentStepIndex, null);
+                    }
+                    moveStartMs = System.currentTimeMillis();
+                    stuckSince  = -1L;
+                    lastPosition = new Vec3d(player.getX(), player.getY(), player.getZ());
+                    state = MacroState.PATHFINDING;
+                    LOGGER.info("Enemies eliminated. Re-pathfinding from {}", player.getBlockPos());
+                }
             } else {
                 // Still has enemies — attack current target (single target at a time)
                 tickAttack(player, world, client);
@@ -480,10 +540,30 @@ public class MacroExecutor {
     // ═══════════════════════════════════════════════════════════════
 
     /**
-     * Pre-computation phase: computes one step path per tick, storing results in
-     * {@code precomputedPaths}. Transitions to PATHFINDING when all paths are ready.
+     * Pre-computation phase: submits each step's path computation to a background thread.
+     * Polls for completion each tick without blocking the main thread.
+     * Transitions to PATHFINDING when all paths are ready or first step is ready.
      */
     private void tickPrecomputing(ClientPlayerEntity player, ClientWorld world) {
+        // All steps submitted and finished — transition
+        if (precomputeIndex >= currentMacro.getSteps().size() && !precomputeBusy) {
+            LOGGER.info("Path pre-computation done ({} steps)", currentMacro.getSteps().size());
+            state = MacroState.PATHFINDING;
+            return;
+        }
+
+        // Background thread still running — wait
+        if (precomputeBusy) {
+            // If the first step path is already available, start navigating immediately
+            // while remaining steps compute in the background
+            if (precomputedPaths.get(0) != null) {
+                LOGGER.info("First path ready, starting navigation while computing remaining steps");
+                state = MacroState.PATHFINDING;
+            }
+            return;
+        }
+
+        // All submitted — done
         if (precomputeIndex >= currentMacro.getSteps().size()) {
             LOGGER.info("Path pre-computation done ({} steps)", currentMacro.getSteps().size());
             state = MacroState.PATHFINDING;
@@ -495,35 +575,52 @@ public class MacroExecutor {
         BlockPos from  = precomputeFromPos != null ? precomputeFromPos : player.getBlockPos();
 
         if (!BlockUtils.isChunkLoaded(world, goal)) {
-            // Cannot path to unloaded chunk yet — leave as null, live fallback will handle it
             LOGGER.info("Pre-compute skip step {} (chunk not loaded)", precomputeIndex);
-        } else {
-            List<BlockPos> path = null;
-            PathHandler pathHandler = MacroModClient.getPathHandler();
-            if (pathHandler != null) {
-                List<BaseBlockPos> sp = pathHandler.findPath(
-                    new BaseBlockPos(from.getX(), from.getY(), from.getZ()),
-                    new ExactGoal(new BaseBlockPos(goal.getX(), goal.getY(), goal.getZ())),
-                    500L
-                );
-                path = toBlockPosPath(sp);
-            }
-            if (path == null || path.isEmpty()) {
-                fallbackPathFinder.setOnlyGround(currentMacro.getConfig().isOnlyGround());
-                path = fallbackPathFinder.findPath(from, goal, world);
-            }
-            precomputedPaths.set(precomputeIndex, path);
-            LOGGER.info("Pre-computed path for step {}: {} nodes", precomputeIndex,
-                    path != null ? path.size() : 0);
+            precomputeFromPos = goal;
+            precomputeIndex++;
+            return;
         }
 
-        precomputeFromPos = goal; // next path starts from this step's destination
+        // Submit path computation to background thread
+        final int stepIdx = precomputeIndex;
+        final BlockPos fromFinal = from;
+        final BlockPos goalFinal = goal;
+        final boolean onlyGround = currentMacro.getConfig().isOnlyGround();
+        final int maxNodes = MacroModClient.getConfigManager().getConfig().getMaxPathNodes();
+        precomputeBusy = true;
+
+        pathfindingExecutor.submit(() -> {
+            try {
+                List<BlockPos> path = null;
+                PathHandler pathHandler = MacroModClient.getPathHandler();
+                if (pathHandler != null) {
+                    List<BaseBlockPos> sp = pathHandler.findPath(
+                        new BaseBlockPos(fromFinal.getX(), fromFinal.getY(), fromFinal.getZ()),
+                        new ExactGoal(new BaseBlockPos(goalFinal.getX(), goalFinal.getY(), goalFinal.getZ())),
+                        500L
+                    );
+                    path = toBlockPosPath(sp);
+                }
+                if (path == null || path.isEmpty()) {
+                    PathFinder bgPathFinder = new PathFinder();
+                    bgPathFinder.setOnlyGround(onlyGround);
+                    bgPathFinder.setMaxNodes(maxNodes);
+                    path = bgPathFinder.findPath(fromFinal, goalFinal, world);
+                }
+                if (precomputedPaths != null && stepIdx < precomputedPaths.size()) {
+                    precomputedPaths.set(stepIdx, path);
+                }
+                LOGGER.info("Pre-computed path for step {}: {} nodes", stepIdx,
+                        path != null ? path.size() : 0);
+            } catch (Exception e) {
+                LOGGER.error("Background path computation failed for step {}", stepIdx, e);
+            } finally {
+                precomputeBusy = false;
+            }
+        });
+
+        precomputeFromPos = goal;
         precomputeIndex++;
-
-        if (precomputeIndex >= currentMacro.getSteps().size()) {
-            LOGGER.info("Path pre-computation done ({} steps)", currentMacro.getSteps().size());
-            state = MacroState.PATHFINDING;
-        }
     }
 
     private void tickPathfinding(ClientPlayerEntity player, ClientWorld world) {
@@ -532,6 +629,7 @@ public class MacroExecutor {
             state = MacroState.COMPLETED;
             return;
         }
+        movementHelper.applyMacroConfig(currentMacro.getConfig());
 
         BlockPos goal = step.getDestination();
 
@@ -582,7 +680,7 @@ public class MacroExecutor {
 
             PathHandler pathHandler = MacroModClient.getPathHandler();
             if (pathHandler != null) {
-                long timeoutMs = Math.max(1000L, currentMacro.getConfig().getMoveTimeout());
+                long timeoutMs = 3000L; // 3s pathfinding calculation cap
                 List<BaseBlockPos> sp = pathHandler.findPath(
                     new BaseBlockPos(player.getBlockPos().getX(), player.getBlockPos().getY(), player.getBlockPos().getZ()),
                     new ExactGoal(new BaseBlockPos(goal.getX(), goal.getY(), goal.getZ())),
@@ -612,6 +710,7 @@ public class MacroExecutor {
         stuckSince = -1L;
         lastPosition = new Vec3d(player.getX(), player.getY(), player.getZ());
         movementHelper.resetJumpState();
+        movementHelper.resetSteeringState();
         state = MacroState.MOVING;
     }
 
@@ -623,6 +722,7 @@ public class MacroExecutor {
         }
 
         float arrivalRadius = currentMacro.getConfig().getArrivalRadius();
+        movementHelper.applyMacroConfig(currentMacro.getConfig());
 
         // Check if we've arrived at the final destination (require centering first)
         if (PlayerUtils.isArrived(player, step.getDestination(), arrivalRadius)) {
@@ -676,13 +776,18 @@ public class MacroExecutor {
                     currentPathIndex, currentPath != null ? currentPath.size() : 0,
                     String.format("%.2f", player.getX()), String.format("%.2f", player.getZ()),
                     String.format("%.2f", toDest), elapsedMove);
+                LOGGER.info("[DBG] STEER yawDelta={} desiredSpeed={} currentSpeed={}",
+                    String.format("%.1f", movementHelper.getLastYawDelta()),
+                    String.format("%.3f", movementHelper.getLastDesiredSpeed()),
+                    String.format("%.3f", movementHelper.getLastCurrentSpeed()));
             }
         }
 
         // Stuck detection (no movement in 3 seconds)
         if (lastPosition != null) {
             double moved = PlayerUtils.horizontalDistanceTo(player, lastPosition);
-            if (moved < 0.5) {
+            double steeringSpeed = movementHelper.getLastCurrentSpeed();
+            if (moved < MOVING_MIN_PROGRESS && steeringSpeed < 0.08) {
                 if (stuckSince < 0) stuckSince = System.currentTimeMillis();
             } else {
                 stuckSince = -1L;
@@ -690,16 +795,25 @@ public class MacroExecutor {
             }
         }
 
-        if (stuckSince >= 0 && System.currentTimeMillis() - stuckSince > 3000) {
-            LOGGER.warn("Player stuck, recalculating path");
+        if (stuckSince >= 0 && System.currentTimeMillis() - stuckSince > MOVING_STUCK_TIMEOUT_MS) {
+            LOGGER.warn("Player stuck, attempting snap then recalculating path");
             sendMessage("macromod.chat.stuck", Formatting.YELLOW);
             stuckSince = -1L;
-            // Clear cached path so it's re-computed from the current (actual) position
-            if (precomputedPaths != null && currentStepIndex < precomputedPaths.size()) {
-                precomputedPaths.set(currentStepIndex, null);
+
+            // Try snapping forward on the existing path before full repath
+            int snapIdx = snapToPath(player, currentPath);
+            if (snapIdx >= 0 && snapIdx > currentPathIndex) {
+                currentPathIndex = snapIdx;
+                lastPosition = new Vec3d(player.getX(), player.getY(), player.getZ());
+                LOGGER.info("Stuck snap: advanced path index to {}", snapIdx);
+            } else {
+                // Clear cached path so it's re-computed from the current (actual) position
+                if (precomputedPaths != null && currentStepIndex < precomputedPaths.size()) {
+                    precomputedPaths.set(currentStepIndex, null);
+                }
+                state = MacroState.PATHFINDING;
+                movementHelper.releaseAllInputs();
             }
-            state = MacroState.PATHFINDING;
-            movementHelper.releaseAllInputs();
             return;
         }
 
@@ -736,9 +850,28 @@ public class MacroExecutor {
             return;
         }
 
+        // ── Pipeline: start computing next step's path while we're still moving ─
+        pipelineNextStepPath(player, world);
+
         // Follow path — keep forward key held through all waypoints for smooth momentum
         if (currentPath != null && currentPathIndex < currentPath.size()) {
             BlockPos nextWaypoint = currentPath.get(currentPathIndex);
+
+            // Start nodes are frequently at/near the player's current position.
+            // Skip them quickly to avoid slowing/orbiting near the path anchor.
+            while (currentPathIndex < currentPath.size() - 1
+                    && isNearWaypoint(player, currentPath.get(currentPathIndex), 1.2)) {
+                currentPathIndex++;
+                nextWaypoint = currentPath.get(currentPathIndex);
+            }
+
+            // If we're already significantly closer to the next node than the current one,
+            // advance immediately to avoid orbiting a behind-us waypoint.
+            while (currentPathIndex < currentPath.size() - 1
+                    && shouldAdvanceWaypoint(player, currentPath.get(currentPathIndex), currentPath.get(currentPathIndex + 1))) {
+                currentPathIndex++;
+                nextWaypoint = currentPath.get(currentPathIndex);
+            }
 
             // Advance to next waypoint when player reaches the center of the current one
             if (movementHelper.hasReachedWaypoint(player, nextWaypoint)) {
@@ -790,8 +923,9 @@ public class MacroExecutor {
 
             // Jump over 1-block obstacles and handle horizontal stalls
             movementHelper.handleJump(player, nextWaypoint);
-            // Smoothly steer and hold forward — no key release between waypoints
-            movementHelper.moveTowards(player, nextWaypoint);
+            // Steer toward a lookahead point so corners are cut naturally.
+            Vec3d smoothedTarget = getSmoothedTarget(currentPath, currentPathIndex, player);
+            movementHelper.moveTowards(player, smoothedTarget);
         } else {
             // Path ended but we're not at the destination — recalculate
             movementHelper.releaseAllInputs();
@@ -805,6 +939,7 @@ public class MacroExecutor {
             advanceToNextStep();
             return;
         }
+        movementHelper.applyMacroConfig(currentMacro.getConfig());
 
         // ── Radius scan: on first entry for this step, find matching blocks nearby ───
         if (!radiusScanDone) {
@@ -1077,8 +1212,8 @@ public class MacroExecutor {
             return;
         }
 
-        // Stuck mining timeout (5 seconds)
-        if (System.currentTimeMillis() - lastMineTime > 5000) {
+        // Stuck mining timeout (1 second)
+        if (System.currentTimeMillis() - lastMineTime > 1000) {
             LOGGER.warn("Stuck mining block at {}, skipping", blockPos);
             if (client.options != null) client.options.attackKey.setPressed(false);
             target.setSkipped(true);
@@ -1157,6 +1292,7 @@ public class MacroExecutor {
             attackChaseLastPos    = null;
             attackChaseStuckMs    = -1L;
             attackChaseJumped     = false;
+            attackLastJumpMs      = -1L;
             PathHandler pathHandler = MacroModClient.getPathHandler();
             if (pathHandler != null) pathHandler.cancelPath();
         }
@@ -1196,17 +1332,21 @@ public class MacroExecutor {
                     if (attackChaseStuckMs < 0) attackChaseStuckMs = System.currentTimeMillis();
                     long stuckMs = System.currentTimeMillis() - attackChaseStuckMs;
 
-                    if (stuckMs >= 3000) {
-                        // Still stuck after a jump — skip this entity and try next
-                        LOGGER.info("[MacroExecutor] tickAttack: stuck for 3s chasing {}, skipping",
+                    if (stuckMs >= 600 && System.currentTimeMillis() - attackLastJumpMs >= 450) {
+                        // Stuck while chasing: jump more aggressively, but with cooldown.
+                        if (client.options != null && player.isOnGround()) {
+                            client.options.jumpKey.setPressed(true);
+                            attackLastJumpMs = System.currentTimeMillis();
+                            attackChaseJumped = true;
+                        }
+                    }
+
+                    if (stuckMs >= 2200) {
+                        // Still stuck after jump attempts — skip this entity and try next.
+                        LOGGER.info("[MacroExecutor] tickAttack: stuck for 2.2s chasing {}, skipping",
                             attackTarget.getName().getString());
                         clearAttackTarget(client);
                         return;
-                    } else if (stuckMs >= 1500 && !attackChaseJumped) {
-                        // Try jumping once to get unstuck
-                        LOGGER.info("[MacroExecutor] tickAttack: stuck 1.5s, trying jump");
-                        if (client.options != null) client.options.jumpKey.setPressed(true);
-                        attackChaseJumped = true;
                     }
                 }
             }
@@ -1404,12 +1544,14 @@ public class MacroExecutor {
     /**
      * Checks if there are any attackable entities within attack range.
      */
-    private boolean hasEntitiesInRange(ClientPlayerEntity player, ClientWorld world, MacroConfig cfg) {
+    private boolean hasEntitiesInRange(ClientPlayerEntity player, ClientWorld world, MacroConfig cfg, boolean requireLos) {
         float range = cfg.getAttackRange();
+        MinecraftClient client = MinecraftClient.getInstance();
         Box box = player.getBoundingBox().expand(range);
         List<LivingEntity> candidates = world.getEntitiesByClass(
             LivingEntity.class, box, e -> {
                 if (e == player || e.isDead() || e.getHealth() <= 0) return false;
+                if (requireLos && !attackHasLOS(client, player, e)) return false;
                 // Always filter out irrelevant entity types
                 if (e instanceof net.minecraft.entity.player.PlayerEntity) return false;
                 if (e instanceof ArmorStandEntity) return false;
@@ -1436,6 +1578,217 @@ public class MacroExecutor {
         return dx * dx + dz * dz < 0.40 * 0.40;
     }
 
+    private static boolean isNearWaypoint(ClientPlayerEntity player, BlockPos waypoint, double radius) {
+        double dx = player.getX() - (waypoint.getX() + 0.5);
+        double dz = player.getZ() - (waypoint.getZ() + 0.5);
+        return dx * dx + dz * dz <= radius * radius;
+    }
+
+    private static boolean shouldAdvanceWaypoint(ClientPlayerEntity player, BlockPos current, BlockPos next) {
+        Vec3d p = new Vec3d(player.getX(), player.getY(), player.getZ());
+        Vec3d c = Vec3d.ofCenter(current);
+        Vec3d n = Vec3d.ofCenter(next);
+
+        double distCurrSq = p.squaredDistanceTo(c);
+        double distNextSq = p.squaredDistanceTo(n);
+
+        // Require meaningful difference so noisy micro-movements don't flip indices.
+        return distNextSq + 0.10 < distCurrSq;
+    }
+
+    /**
+     * Returns a blended target between the current and next path nodes.
+     * Straight segments use stronger lookahead, while corners reduce blending
+     * to avoid overcutting into obstacle edges.
+     */
+    private Vec3d getSmoothedTarget(List<BlockPos> path, int idx, ClientPlayerEntity player) {
+        if (path == null || path.isEmpty() || idx < 0 || idx >= path.size()) {
+            return new Vec3d(player.getX(), player.getY(), player.getZ());
+        }
+
+        Vec3d current = Vec3d.ofCenter(path.get(idx));
+        if (idx >= path.size() - 1) {
+            return current;
+        }
+
+        Vec3d next = Vec3d.ofCenter(path.get(idx + 1));
+        double blend = LOOKAHEAD_DEFAULT_BLEND;
+
+        if (idx + 2 < path.size()) {
+            Vec3d afterNext = Vec3d.ofCenter(path.get(idx + 2));
+            Vec3d seg = next.subtract(current);
+            Vec3d segNext = afterNext.subtract(next);
+            double segLen = seg.length();
+            double segNextLen = segNext.length();
+            if (segLen > 0.001 && segNextLen > 0.001) {
+                double dirDot = seg.dotProduct(segNext) / (segLen * segNextLen);
+                if (dirDot < 0.70) {
+                    blend = LOOKAHEAD_CORNER_BLEND;
+                } else if (dirDot > 0.95) {
+                    blend = LOOKAHEAD_STRAIGHT_BLEND;
+                }
+            }
+        }
+
+        Vec3d playerPos = new Vec3d(player.getX(), player.getY(), player.getZ());
+        if (playerPos.distanceTo(current) < 0.9) {
+            blend = Math.min(0.75, blend + 0.12);
+        }
+
+        return current.lerp(next, blend);
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    // Position snapping — find nearest valid re-entry point on path
+    // ═══════════════════════════════════════════════════════════════
+
+    /**
+     * Scans the current path for the nearest node to the player's actual position.
+     * Returns the index of that node, or -1 if no suitable node is found.
+     * Used after disruptions (combat, knockback) to resume path-following
+     * from the closest valid point rather than backtracking to the start.
+     */
+    private int snapToPath(ClientPlayerEntity player, List<BlockPos> path) {
+        if (path == null || path.isEmpty()) return -1;
+
+        double px = player.getX(), py = player.getY(), pz = player.getZ();
+        double bestDistSq = Double.MAX_VALUE;
+        int bestIdx = -1;
+
+        // Scan forward from current index (prefer ahead over behind)
+        int searchStart = Math.max(0, currentPathIndex - 3);
+        int searchEnd = Math.min(path.size(), currentPathIndex + 20);
+
+        for (int i = searchStart; i < searchEnd; i++) {
+            BlockPos wp = path.get(i);
+            double dx = px - (wp.getX() + 0.5);
+            double dy = py - wp.getY();
+            double dz = pz - (wp.getZ() + 0.5);
+            double dSq = dx * dx + dy * dy + dz * dz;
+
+            if (dSq < bestDistSq) {
+                bestDistSq = dSq;
+                bestIdx = i;
+            }
+        }
+
+        // Only snap if within 8 blocks of a path node
+        if (bestDistSq > 64.0) return -1;
+        return bestIdx;
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    // Path splicing — join a new segment onto the existing path
+    // ═══════════════════════════════════════════════════════════════
+
+    /**
+     * Attempts to splice a new path segment from the player's current position
+     * onto the existing path. If the new segment reaches a point near the existing
+     * path, the two are merged at the overlap. Otherwise, falls back to full repath.
+     *
+     * @return spliced path, or null if splicing is not possible
+     */
+    private List<BlockPos> splicePath(List<BlockPos> existingPath, List<BlockPos> newSegment) {
+        if (existingPath == null || existingPath.isEmpty()
+                || newSegment == null || newSegment.isEmpty()) {
+            return null;
+        }
+
+        // Find where (if anywhere) the new segment meets the existing path
+        BlockPos newEnd = newSegment.get(newSegment.size() - 1);
+
+        int overlapIdx = -1;
+        double bestOverlapDist = Double.MAX_VALUE;
+        for (int i = currentPathIndex; i < existingPath.size(); i++) {
+            BlockPos ep = existingPath.get(i);
+            double dx = newEnd.getX() - ep.getX();
+            double dz = newEnd.getZ() - ep.getZ();
+            double dy = newEnd.getY() - ep.getY();
+            double dSq = dx * dx + dy * dy + dz * dz;
+            if (dSq < bestOverlapDist && dSq <= 4.0) { // within 2 blocks
+                bestOverlapDist = dSq;
+                overlapIdx = i;
+            }
+        }
+
+        if (overlapIdx < 0) return null; // no overlap — can't splice
+
+        // Build spliced path: newSegment + existingPath[overlapIdx+1..]
+        List<BlockPos> spliced = new ArrayList<>(newSegment.size() + (existingPath.size() - overlapIdx));
+        spliced.addAll(newSegment);
+        for (int i = overlapIdx + 1; i < existingPath.size(); i++) {
+            spliced.add(existingPath.get(i));
+        }
+
+        LOGGER.info("[Splice] Spliced {} new + {} existing nodes at overlap index {}",
+                newSegment.size(), existingPath.size() - overlapIdx - 1, overlapIdx);
+        return spliced;
+    }
+
+    // ═══════════════════════════════════════════════════════════════
+    // Pipelined segment computation — compute next step while moving
+    // ═══════════════════════════════════════════════════════════════
+
+    /**
+     * Kicks off background computation of the NEXT step's path while following the
+     * current step. Called during MOVING state when the next step hasn't been computed yet.
+     */
+    private void pipelineNextStepPath(ClientPlayerEntity player, ClientWorld world) {
+        int nextStep = currentStepIndex + 1;
+        if (nextStep >= currentMacro.getSteps().size()) return; // no next step
+        if (precomputedPaths == null || nextStep >= precomputedPaths.size()) return;
+        if (precomputedPaths.get(nextStep) != null) return; // already computed
+        if (pipelineBusy) return; // already computing
+        if (pipelineStepIndex == nextStep) return; // already submitted
+
+        MacroStep step = currentMacro.getSteps().get(nextStep);
+        BlockPos goal = step.getDestination();
+
+        // Use current step's destination as the starting point for next path
+        MacroStep currentStep = currentMacro.getSteps().get(currentStepIndex);
+        BlockPos from = currentStep.getDestination();
+
+        if (!BlockUtils.isChunkLoaded(world, goal)) return; // can't compute yet
+
+        pipelineBusy = true;
+        pipelineStepIndex = nextStep;
+        final int stepIdx = nextStep;
+        final BlockPos fromFinal = from;
+        final BlockPos goalFinal = goal;
+        final boolean onlyGround = currentMacro.getConfig().isOnlyGround();
+        final int maxNodes = MacroModClient.getConfigManager().getConfig().getMaxPathNodes();
+
+        pathfindingExecutor.submit(() -> {
+            try {
+                List<BlockPos> path = null;
+                PathHandler pathHandler = MacroModClient.getPathHandler();
+                if (pathHandler != null) {
+                    List<BaseBlockPos> sp = pathHandler.findPath(
+                        new BaseBlockPos(fromFinal.getX(), fromFinal.getY(), fromFinal.getZ()),
+                        new ExactGoal(new BaseBlockPos(goalFinal.getX(), goalFinal.getY(), goalFinal.getZ())),
+                        500L
+                    );
+                    path = toBlockPosPath(sp);
+                }
+                if (path == null || path.isEmpty()) {
+                    PathFinder bgPathFinder = new PathFinder();
+                    bgPathFinder.setOnlyGround(onlyGround);
+                    bgPathFinder.setMaxNodes(maxNodes);
+                    path = bgPathFinder.findPath(fromFinal, goalFinal, world);
+                }
+                if (precomputedPaths != null && stepIdx < precomputedPaths.size()) {
+                    precomputedPaths.set(stepIdx, path);
+                }
+                LOGGER.info("[Pipeline] Pre-computed path for step {}: {} nodes", stepIdx,
+                        path != null ? path.size() : 0);
+            } catch (Exception e) {
+                LOGGER.error("[Pipeline] Background path computation failed for step {}", stepIdx, e);
+            } finally {
+                pipelineBusy = false;
+            }
+        });
+    }
+
     private void advanceToNextStep() {
         currentStepIndex++;
         radiusScanDone = false;
@@ -1444,9 +1797,15 @@ public class MacroExecutor {
 
         if (currentStepIndex >= currentMacro.getSteps().size()) {
             if (currentMacro.getConfig().isLoop()) {
-                // Reset and loop
+                // Reset and loop — clear all precomputed paths since player is now
+                // at the last step's destination, not the original start position
                 currentMacro.reset();
                 currentStepIndex = 0;
+                if (precomputedPaths != null) {
+                    for (int i = 0; i < precomputedPaths.size(); i++) {
+                        precomputedPaths.set(i, null);
+                    }
+                }
                 state = MacroState.PATHFINDING;
                 LOGGER.info("Macro loop: restarting from step 0");
             } else {

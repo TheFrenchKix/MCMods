@@ -88,19 +88,19 @@ public class HudOverlay {
         String stateStr = recorder.getState() == RecordingState.RECORDING ? "⏺ Recording" : "⏸ Paused";
         context.drawTextWithShadow(textRenderer,
                 Text.literal(stateStr).formatted(Formatting.RED),
-                x, y, 0xFFFFFF);
+            x, y, 0xFFFFFFFF);
         y += LINE_HEIGHT;
 
         // Macro name
         context.drawTextWithShadow(textRenderer,
                 Text.literal("Recording: " + macro.getName()),
-                x, y, 0xFFFF00);
+            x, y, 0xFFFFFF00);
         y += LINE_HEIGHT;
 
         // Step count
         context.drawTextWithShadow(textRenderer,
                 Text.literal("Steps: " + macro.getSteps().size()),
-                x, y, 0xFFFFFF);
+            x, y, 0xFFFFFFFF);
         y += LINE_HEIGHT;
 
         // Blocks in current step
@@ -108,7 +108,7 @@ public class HudOverlay {
         int blockCount = currentStep != null ? currentStep.getTargets().size() : 0;
         context.drawTextWithShadow(textRenderer,
                 Text.literal("Blocks in step: " + blockCount),
-                x, y, 0xFFFFFF);
+            x, y, 0xFFFFFFFF);
         y += LINE_HEIGHT;
 
         // Last added
@@ -116,7 +116,7 @@ public class HudOverlay {
         if (!lastAdded.isEmpty()) {
             context.drawTextWithShadow(textRenderer,
                     Text.literal("Last: " + lastAdded),
-                    x, y, 0xAAAAAA);
+                    x, y, 0xFFAAAAAA);
         }
     }
 
@@ -145,13 +145,13 @@ public class HudOverlay {
         // Step progress
         context.drawTextWithShadow(textRenderer,
                 Text.literal("Step " + (executor.getCurrentStepIndex() + 1) + " / " + executor.getTotalSteps()),
-                x, y, 0xFFFFFF);
+            x, y, 0xFFFFFFFF);
         y += LINE_HEIGHT;
 
         // Block progress in current step
         context.drawTextWithShadow(textRenderer,
                 Text.literal("Blocks: " + executor.getBlocksProcessedInStep() + " / " + executor.getTotalBlocksInStep()),
-                x, y, 0xFFFFFF);
+            x, y, 0xFFFFFFFF);
         y += LINE_HEIGHT;
 
         // Waypoint coordinates
@@ -162,7 +162,7 @@ public class HudOverlay {
                     Text.literal("WP: " + step.getDestination().getX()
                             + ", " + step.getDestination().getY()
                             + ", " + step.getDestination().getZ()),
-                    x, y, 0xCCCCCC);
+                    x, y, 0xFFCCCCCC);
             y += LINE_HEIGHT;
         }
 
@@ -230,14 +230,14 @@ public class HudOverlay {
 
     private int getStateColor(MacroState state) {
         return switch (state) {
-            case IDLE -> 0xAAAAAA;
-            case PRECOMPUTING -> 0xAA55FF;
-            case PATHFINDING, MOVING -> 0x55FFFF;
-            case MINING, LINE_FARMING -> 0xFFAA00;
-            case NEXT_STEP -> 0x55FF55;
-            case PAUSED -> 0xFFFF55;
-            case COMPLETED -> 0x55FF55;
-            case ERROR -> 0xFF5555;
+            case IDLE -> 0xFFAAAAAA;
+            case PRECOMPUTING -> 0xFFAA55FF;
+            case PATHFINDING, MOVING -> 0xFF55FFFF;
+            case MINING, LINE_FARMING -> 0xFFFFAA00;
+            case NEXT_STEP -> 0xFF55FF55;
+            case PAUSED -> 0xFFFFFF55;
+            case COMPLETED -> 0xFF55FF55;
+            case ERROR -> 0xFFFF5555;
         };
     }
 }
