@@ -71,7 +71,7 @@ public class AutoFishingManager {
     /** Maximum time to spend trying to kill one target. */
     private static final long   KILL_TIMEOUT_MS     = 6_000L;
     /** Max 3D reach distance required for close-mode attack. */
-    private static final float  CLOSE_REACH_DISTANCE = 2.5f;
+    private static final float  CLOSE_REACH_DISTANCE = 2.9f;
     /** Distance at which to start spam-clicking to build attack animation. */
     private static final float  SPAM_CLICK_DISTANCE = 4.0f;
     /** How long to wait in close mode before skipping an unchanged target. */

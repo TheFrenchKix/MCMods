@@ -113,7 +113,7 @@ public class MacroExecutor {
     private static final int   MACRO_MAX_NO_LOS_TICKS    = 1;
     private static final float ATTACK_RELEASE_BUFFER     = 1.5f;
     /** Macro melee reach distance in blocks (matching AutoFishing close mode). */
-    private static final float MACRO_MELEE_REACH         = 2.5f;
+    private static final float MACRO_MELEE_REACH         = 2.9f;
     /** Distance at which to start spam-clicking to build attack animation. */
     private static final float MACRO_SPAM_CLICK_DISTANCE = 4.0f;
     private long attackFirstOnTargetMs = -1L;
@@ -776,6 +776,18 @@ public class MacroExecutor {
             }
         }
 
+        // If player is in water and stuck, hold jump to swim to the surface
+        {
+            MinecraftClient mc = MinecraftClient.getInstance();
+            if (player.isTouchingWater() && stuckSince >= 0
+                    && System.currentTimeMillis() - stuckSince > 800
+                    && mc.options != null) {
+                mc.options.jumpKey.setPressed(true);
+            } else if (mc.options != null && !attackChaseJumped) {
+                mc.options.jumpKey.setPressed(false);
+            }
+        }
+
         if (stuckSince >= 0 && System.currentTimeMillis() - stuckSince > 5000) {
             stuckRecoveries++;
             repathCount++;
@@ -1247,6 +1259,8 @@ public class MacroExecutor {
                         if (e instanceof net.minecraft.entity.player.PlayerEntity) return false;
                         if (e instanceof ArmorStandEntity) return false;
                         if (e.isInvisible()) return false;
+                        // Skip entities in water or lava — chasing them would push player into fluid
+                        if (e.isTouchingWater() || e.isInLava()) return false;
                         // If whitelist mode, only include whitelisted types
                         if (cfg.isAttackWhitelistOnly()) {
                             String id = Registries.ENTITY_TYPE.getId(e.getType()).toString();
@@ -1284,10 +1298,32 @@ public class MacroExecutor {
         double meleeSq  = MACRO_MELEE_REACH * MACRO_MELEE_REACH;
 
         if (distSq > meleeSq) {
+            // Abort chase if it would require the player to enter water or lava
+            if (player.isTouchingWater() || player.isInLava()) {
+                LOGGER.info("[macro.metrics.robustness] attackDrop reason=fluid target={}",
+                    attackTarget.getName().getString());
+                clearAttackTarget(client);
+                return;
+            }
+
             // In elimination mode, attack chase is authoritative and must be allowed
             // even if previous state was MOVING (state tick is suspended while fighting).
             if (state != MacroState.MOVING || isEliminatingEnemies) {
                 if (client.options != null) client.options.forwardKey.setPressed(true);
+            }
+
+            // Spam-click while chasing to keep attack cooldown primed
+            {
+                long now = System.currentTimeMillis();
+                int effectiveCps = cfg.isRandomAttackCps() ? (7 + ATTACK_RAND.nextInt(5)) : cfg.getAttackCPS();
+                long cpsIntervalMs = 1000L / Math.max(1, effectiveCps);
+                if (lastSpamClickMs < 0 || now - lastSpamClickMs >= cpsIntervalMs) {
+                    float cooldown = player.getAttackCooldownProgress(0f);
+                    if (cooldown >= ATTACK_COOLDOWN_THRESHOLD && client.interactionManager != null) {
+                        MouseInputHelper.leftClick(client);
+                        lastSpamClickMs = now;
+                    }
+                }
             }
 
             // Stuck detection — track lateral movement progress
@@ -1319,10 +1355,10 @@ public class MacroExecutor {
                         clearAttackTarget(client);
                         return;
                     } else if (stuckMs >= 700 && !attackChaseJumped) {
-                        // Try jumping once to get unstuck
+                        // In water: hold jump to swim to the surface; on land: single jump to dislodge
                         attackChaseJumpAttempts++;
-                        LOGGER.info("[macro.metrics.robustness] attackChaseJumpAttempt target={}",
-                            attackTarget.getName().getString());
+                        LOGGER.info("[macro.metrics.robustness] attackChaseJumpAttempt target={} inWater={}",
+                            attackTarget.getName().getString(), player.isTouchingWater());
                         if (client.options != null) client.options.jumpKey.setPressed(true);
                         attackChaseJumped = true;
                     }
@@ -1350,18 +1386,6 @@ public class MacroExecutor {
             int effectiveCps = cfg.isRandomAttackCps() ? (7 + ATTACK_RAND.nextInt(5)) : cfg.getAttackCPS();
             long cpsIntervalMs      = 1000L / Math.max(1, effectiveCps);
             boolean cpsReady        = now - lastAttackMs >= cpsIntervalMs;
-            
-            // Spam-click at 3.5 blocks range
-            double spamDistSq = MACRO_SPAM_CLICK_DISTANCE * MACRO_SPAM_CLICK_DISTANCE;
-            if (distSq <= spamDistSq) {
-                if (lastSpamClickMs < 0 || now - lastSpamClickMs >= cpsIntervalMs) {
-                    float cooldown = player.getAttackCooldownProgress(0f);
-                    if (cooldown >= ATTACK_COOLDOWN_THRESHOLD && client.interactionManager != null) {
-                        MouseInputHelper.leftClick(client);
-                        lastSpamClickMs = now;
-                    }
-                }
-            }
 
             if (lookingAtTarget) {
                 if (attackFirstOnTargetMs < 0) attackFirstOnTargetMs = System.currentTimeMillis();
