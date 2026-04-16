@@ -25,6 +25,8 @@ import net.minecraft.util.math.Box;
 import net.minecraft.util.math.RotationAxis;
 import net.minecraft.util.math.Vec3d;
 import org.joml.Matrix4f;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.util.ArrayList;
 import java.util.HashSet;
@@ -36,6 +38,8 @@ import java.util.Set;
  * Registered on {@code WorldRenderEvents.END_MAIN} for proper vertex flushing.
  */
 public class ESPRenderer {
+
+    private static final Logger LOGGER = LoggerFactory.getLogger("macromod");
 
     private static final double PLAYER_HEAD_SIZE = 0.55;
 
@@ -55,18 +59,10 @@ public class ESPRenderer {
             ).translucent().expectedBufferSize(1536).build()
     );
 
-    /**
-     * Filled-triangle layer for hotspot circle ESP, no depth test, blending on.
-     * Uses DEBUG_FILLED_BOX_SNIPPET which outputs POSITION_COLOR geometry.
-     */
-    private static final RenderLayer HOTSPOT_FILL_LAYER = RenderLayer.of(
-            "macromod_hotspot_fill",
-            RenderSetup.builder(RenderPipelines.DEBUG_FILLED_BOX)
-                    .translucent().expectedBufferSize(4096).build()
-    );
-
-    private static final int HOTSPOT_CIRCLE_SEGMENTS = 48;
-    private static final float HOTSPOT_CIRCLE_RADIUS   = 1.5f;
+    private static final int HOTSPOT_CIRCLE_SEGMENTS = 96;
+    private static final float HOTSPOT_CIRCLE_RADIUS   = 3.5f;
+    private static final double HOTSPOT_VERTICAL_OFFSET = -1.5;
+    private static final int HOTSPOT_FILL_STEPS = 22;
 
     private static final int BLOCK_SCAN_INTERVAL = 20;
 
@@ -149,6 +145,16 @@ public class ESPRenderer {
                     // Render around the actual player_head size and orientation.
                     drawHeadBoxWithHeading(matrices, vc, ase, tickDelta, 0.0f, 1.0f, 1.0f, 0.8f);
                 }
+            }
+        }
+
+        // ── 5. Hotspot ESP (through-walls full circle + fill) ──
+        if (cfg.isHotspotEspEnabled()) {
+            List<Vec3d> hotspots = HotspotManager.getInstance().getHotspots();
+            for (Vec3d hotspot : hotspots) {
+                Vec3d center = hotspot.add(0.0, HOTSPOT_VERTICAL_OFFSET, 0.0);
+                drawFilledCircleNoDepth(matrices, vc, center, HOTSPOT_CIRCLE_RADIUS, 1.0f, 0.88f, 0.12f, 0.30f);
+                drawCircleOutlineNoDepth(matrices, vc, center, HOTSPOT_CIRCLE_RADIUS, 1.0f, 0.96f, 0.22f, 0.95f);
             }
         }
 
@@ -235,30 +241,36 @@ public class ESPRenderer {
         return headId.toString().equals("minecraft:player_head");
     }
 
-    // ── Filled circle helper ────────────────────────────────────────
+    // ── Hotspot circle helpers ──────────────────────────────────────
 
-    /**
-     * Renders a flat horizontal filled circle (XZ plane) as a triangle fan.
-     * Each slice is center + edge_i + edge_(i+1); total = SEGMENTS triangles.
-     */
-    private static void drawFilledCircle(MatrixStack matrices, VertexConsumer vc,
-                                          Vec3d center, float radius,
-                                          float r, float g, float b, float a) {
-        org.joml.Matrix4f m = matrices.peek().getPositionMatrix();
+    /** Renders a horizontal circle outline in XZ plane using the no-depth line layer. */
+    private static void drawCircleOutlineNoDepth(MatrixStack matrices, VertexConsumer vc,
+                                                 Vec3d center, float radius,
+                                                 float r, float g, float b, float a) {
+        Matrix4f m = matrices.peek().getPositionMatrix();
         float cx = (float) center.x;
         float cy = (float) center.y;
         float cz = (float) center.z;
         for (int i = 0; i < HOTSPOT_CIRCLE_SEGMENTS; i++) {
-            double a0 = 2.0 * Math.PI * i       / HOTSPOT_CIRCLE_SEGMENTS;
+            double a0 = 2.0 * Math.PI * i / HOTSPOT_CIRCLE_SEGMENTS;
             double a1 = 2.0 * Math.PI * (i + 1) / HOTSPOT_CIRCLE_SEGMENTS;
             float x0 = cx + radius * (float) Math.cos(a0);
             float z0 = cz + radius * (float) Math.sin(a0);
             float x1 = cx + radius * (float) Math.cos(a1);
             float z1 = cz + radius * (float) Math.sin(a1);
-            // Triangle: center, edge0, edge1
-            vc.vertex(m, cx, cy, cz).color(r, g, b, a);
-            vc.vertex(m, x0, cy, z0).color(r, g, b, a);
-            vc.vertex(m, x1, cy, z1).color(r, g, b, a);
+            addLine(m, vc, x0, cy, z0, x1, cy, z1, r, g, b, a);
+        }
+    }
+
+    /** Simulates a filled disc through walls by drawing many concentric no-depth rings. */
+    private static void drawFilledCircleNoDepth(MatrixStack matrices, VertexConsumer vc,
+                                                Vec3d center, float radius,
+                                                float r, float g, float b, float a) {
+        for (int step = 1; step <= HOTSPOT_FILL_STEPS; step++) {
+            float t = (float) step / HOTSPOT_FILL_STEPS;
+            float ringRadius = radius * t;
+            float ringAlpha = a * (0.35f + 0.65f * t);
+            drawCircleOutlineNoDepth(matrices, vc, center, ringRadius, r, g, b, ringAlpha);
         }
     }
 
