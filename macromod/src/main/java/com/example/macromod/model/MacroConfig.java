@@ -51,26 +51,11 @@ public class MacroConfig {
     /** Whether to keep crosshair locked on target while allowing camera movement. */
     private boolean lockCrosshair = false;
 
+    /** If true, only mine targets explicitly defined in the macro step (no nearby scan). */
+    private boolean mineOnlyDefinedTargets = false;
+
     /** Macro execution mode type (NORMAL or LINE_FARM). */
     private MacroType macroType = MacroType.NORMAL;
-
-    /** Enables steering-based movement (arrival + acceleration). */
-    private boolean steeringEnabled = true;
-
-    /** Maximum horizontal steering speed in blocks per tick. */
-    private double steeringMaxSpeed = 0.23;
-
-    /** Acceleration factor per tick when approaching desired velocity. */
-    private double steeringAcceleration = 0.18;
-
-    /** Radius (blocks) where arrival slowdown starts. */
-    private double steeringSlowingRadius = 2.0;
-
-    /** Enables subtle target jitter for humanized motion. */
-    private boolean steeringNoiseEnabled = false;
-
-    /** Maximum jitter amplitude in blocks (XZ only). */
-    private double steeringNoiseAmplitude = 0.05;
 
     public MacroConfig() {
         this.loop = false;
@@ -195,60 +180,20 @@ public class MacroConfig {
         this.lockCrosshair = lockCrosshair;
     }
 
+    public boolean isMineOnlyDefinedTargets() {
+        return mineOnlyDefinedTargets;
+    }
+
+    public void setMineOnlyDefinedTargets(boolean mineOnlyDefinedTargets) {
+        this.mineOnlyDefinedTargets = mineOnlyDefinedTargets;
+    }
+
     public MacroType getMacroType() {
         return macroType;
     }
 
     public void setMacroType(MacroType macroType) {
         this.macroType = macroType;
-    }
-
-    public boolean isSteeringEnabled() {
-        return steeringEnabled;
-    }
-
-    public void setSteeringEnabled(boolean steeringEnabled) {
-        this.steeringEnabled = steeringEnabled;
-    }
-
-    public double getSteeringMaxSpeed() {
-        return steeringMaxSpeed;
-    }
-
-    public void setSteeringMaxSpeed(double steeringMaxSpeed) {
-        this.steeringMaxSpeed = Math.max(0.08, Math.min(0.40, steeringMaxSpeed));
-    }
-
-    public double getSteeringAcceleration() {
-        return steeringAcceleration;
-    }
-
-    public void setSteeringAcceleration(double steeringAcceleration) {
-        this.steeringAcceleration = Math.max(0.05, Math.min(0.50, steeringAcceleration));
-    }
-
-    public double getSteeringSlowingRadius() {
-        return steeringSlowingRadius;
-    }
-
-    public void setSteeringSlowingRadius(double steeringSlowingRadius) {
-        this.steeringSlowingRadius = Math.max(0.5, Math.min(6.0, steeringSlowingRadius));
-    }
-
-    public boolean isSteeringNoiseEnabled() {
-        return steeringNoiseEnabled;
-    }
-
-    public void setSteeringNoiseEnabled(boolean steeringNoiseEnabled) {
-        this.steeringNoiseEnabled = steeringNoiseEnabled;
-    }
-
-    public double getSteeringNoiseAmplitude() {
-        return steeringNoiseAmplitude;
-    }
-
-    public void setSteeringNoiseAmplitude(double steeringNoiseAmplitude) {
-        this.steeringNoiseAmplitude = Math.max(0.0, Math.min(0.20, steeringNoiseAmplitude));
     }
 
     /**
@@ -270,13 +215,8 @@ public class MacroConfig {
         copy.randomAttackCps = randomAttackCps;
         copy.onlyGround = onlyGround;
         copy.lockCrosshair = lockCrosshair;
+        copy.mineOnlyDefinedTargets = mineOnlyDefinedTargets;
         copy.macroType = macroType;
-        copy.steeringEnabled = steeringEnabled;
-        copy.steeringMaxSpeed = steeringMaxSpeed;
-        copy.steeringAcceleration = steeringAcceleration;
-        copy.steeringSlowingRadius = steeringSlowingRadius;
-        copy.steeringNoiseEnabled = steeringNoiseEnabled;
-        copy.steeringNoiseAmplitude = steeringNoiseAmplitude;
         return copy;
     }
 }

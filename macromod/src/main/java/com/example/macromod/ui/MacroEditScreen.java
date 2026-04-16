@@ -59,18 +59,16 @@ public class MacroEditScreen extends BasePopupScreen {
     // ── Edit state ────────────────────────────────────────────────────
     private final Macro macro;
     private String  editName, editDesc;
-    private boolean editLoop, editSkipMismatch, editAttackDanger, editOnlyGround, editLockCam;
+    private boolean editLoop, editSkipMismatch, editMineOnlyDefinedTargets, editAttackDanger, editOnlyGround, editLockCam;
     private boolean editRandomAttackCps;
     private int     editAttackCPS, editMiningDelay, editMoveTimeout;
     private float   editArrivalRadius;
     private boolean editAttackEnabled, editAttackWlOnly;
-    private boolean editSteeringEnabled, editSteeringNoiseEnabled;
-    private double  editSteeringMaxSpeed, editSteeringAcceleration, editSteeringSlowingRadius, editSteeringNoiseAmplitude;
     private final List<String> editAttackWl = new ArrayList<>();
     private int     editAttackRange;
 
     // ── Toggle animations ─────────────────────────────────────────────
-    private final float[] tgAnim = new float[10];
+    private final float[] tgAnim = new float[9];
 
     // ── Left panel scroll ─────────────────────────────────────────────
     private int leftScroll    = 0;
@@ -85,8 +83,8 @@ public class MacroEditScreen extends BasePopupScreen {
     private int stepScroll = 0, selStep = -1;
 
     // ── Hit-area caches (set during render, read during click) ────────
-    private final int[][] tgBounds  = new int[10][4];  // [idx][x,y,w,h], w<0 = inactive
-    private final int[][] cycBounds = new int[8][4];  // [idx][lbx,rbx,y, active?]
+    private final int[][] tgBounds  = new int[9][4];  // [idx][x,y,w,h], w<0 = inactive
+    private final int[][] cycBounds = new int[4][4];  // [idx][lbx,rbx,y, active?]
     private int atkRngLbx = -1, atkRngRbx = -1, atkRngY = -1;
     private int stepBtnY;
     private final int[] stepBtnX = new int[4];
@@ -111,6 +109,7 @@ public class MacroEditScreen extends BasePopupScreen {
         editDesc          = macro.getDescription() != null ? macro.getDescription() : "";
         editLoop          = c.isLoop();
         editSkipMismatch  = c.isSkipMismatch();
+        editMineOnlyDefinedTargets = c.isMineOnlyDefinedTargets();
         editAttackDanger  = c.isAttackDanger();
         editOnlyGround    = c.isOnlyGround();
         editLockCam       = c.isLockCrosshair();
@@ -123,16 +122,9 @@ public class MacroEditScreen extends BasePopupScreen {
         editRandomAttackCps = c.isRandomAttackCps();
         editAttackWl.addAll(c.getAttackWhitelist());
         editAttackRange   = c.getAttackRange();
-        editSteeringEnabled = c.isSteeringEnabled();
-        editSteeringMaxSpeed = c.getSteeringMaxSpeed();
-        editSteeringAcceleration = c.getSteeringAcceleration();
-        editSteeringSlowingRadius = c.getSteeringSlowingRadius();
-        editSteeringNoiseEnabled = c.isSteeringNoiseEnabled();
-        editSteeringNoiseAmplitude = c.getSteeringNoiseAmplitude();
-        boolean[] v = {editLoop, editSkipMismatch, editAttackDanger, editOnlyGround,
-            editLockCam, editAttackEnabled, editAttackWlOnly, editRandomAttackCps,
-            editSteeringEnabled, editSteeringNoiseEnabled};
-        for (int i = 0; i < 10; i++) tgAnim[i] = v[i] ? 1f : 0f;
+        boolean[] v = {editLoop, editSkipMismatch, editMineOnlyDefinedTargets, editAttackDanger, editOnlyGround,
+            editLockCam, editAttackEnabled, editAttackWlOnly, editRandomAttackCps};
+        for (int i = 0; i < 9; i++) tgAnim[i] = v[i] ? 1f : 0f;
     }
 
     // ═════════════════════════════════════════════════════════════════
@@ -174,10 +166,9 @@ public class MacroEditScreen extends BasePopupScreen {
     @Override
     protected void drawScreen(DrawContext ctx, int mx, int my, float delta) {
         // Animate toggles per-frame
-        boolean[] vals = {editLoop, editSkipMismatch, editAttackDanger, editOnlyGround,
-            editLockCam, editAttackEnabled, editAttackWlOnly, editRandomAttackCps,
-            editSteeringEnabled, editSteeringNoiseEnabled};
-        for (int i = 0; i < 10; i++) tgAnim[i] = Anim.smooth(tgAnim[i], vals[i] ? 1f : 0f, 20f);
+        boolean[] vals = {editLoop, editSkipMismatch, editMineOnlyDefinedTargets, editAttackDanger, editOnlyGround,
+            editLockCam, editAttackEnabled, editAttackWlOnly, editRandomAttackCps};
+        for (int i = 0; i < 9; i++) tgAnim[i] = Anim.smooth(tgAnim[i], vals[i] ? 1f : 0f, 20f);
 
         // Reset hit caches
         for (int[] b : tgBounds)  b[2] = -1;
@@ -189,7 +180,7 @@ public class MacroEditScreen extends BasePopupScreen {
         RoundedRectRenderer.draw(ctx, px, py, pw, ph, R, EasyBlockGui.C_BG);
 
         // Header
-        ctx.fill(px, py, px + pw, py + HH, 0xFF101018);
+        ctx.fill(px, py, px + pw, py + HH, EasyBlockGui.C_PANEL_HEAD);
         ctx.fill(px, py + HH - 1, px + pw, py + HH, EasyBlockGui.C_DIVIDER);
         ctx.drawTextWithShadow(textRenderer,
                 Text.literal("\u00A7e\u2605 \u00A7f\u00A7lEdit: " + macro.getName()),
@@ -252,10 +243,10 @@ public class MacroEditScreen extends BasePopupScreen {
         sy = section(ctx, x, re, sy, "Config", EasyBlockGui.C_ACCENT);
         sy = toggle(ctx, mx, my, x, re, sy, "Loop",           tgAnim[0], 0) + ROW_GAP;
         sy = toggle(ctx, mx, my, x, re, sy, "Skip Mismatch",  tgAnim[1], 1) + ROW_GAP;
-        sy = toggle(ctx, mx, my, x, re, sy, "Attack Danger",  tgAnim[2], 2) + ROW_GAP;
-        sy = toggle(ctx, mx, my, x, re, sy, "Only Ground",    tgAnim[3], 3) + ROW_GAP;
-        sy = toggle(ctx, mx, my, x, re, sy, "Steering Move",  tgAnim[8], 8) + ROW_GAP;
-        sy = toggle(ctx, mx, my, x, re, sy, "Lock Camera",    tgAnim[4], 4) + 8;
+        sy = toggle(ctx, mx, my, x, re, sy, "Only Defined Blocks", tgAnim[2], 2) + ROW_GAP;
+        sy = toggle(ctx, mx, my, x, re, sy, "Attack Danger",  tgAnim[3], 3) + ROW_GAP;
+        sy = toggle(ctx, mx, my, x, re, sy, "Only Ground",    tgAnim[4], 4) + ROW_GAP;
+        sy = toggle(ctx, mx, my, x, re, sy, "Lock Camera",    tgAnim[5], 5) + 8;
 
         // Timing
         sy = section(ctx, x, re, sy, "Timing", EasyBlockGui.C_ACCENT);
@@ -263,27 +254,16 @@ public class MacroEditScreen extends BasePopupScreen {
         sy = cycler(ctx, mx, my, x, re, sy, "Move Timeout",   editMoveTimeout + " ms",               1) + ROW_GAP;
         sy = cycler(ctx, mx, my, x, re, sy, "Arrival Radius", String.format("%.1f blk", editArrivalRadius), 2) + 8;
 
-        // Movement steering
-        sy = section(ctx, x, re, sy, "Movement", EasyBlockGui.C_ACCENT);
-        sy = cycler(ctx, mx, my, x, re, sy, "Max Speed", String.format("%.2f blk/t", editSteeringMaxSpeed), 3) + ROW_GAP;
-        sy = cycler(ctx, mx, my, x, re, sy, "Acceleration", String.format("%.2f", editSteeringAcceleration), 4) + ROW_GAP;
-        sy = cycler(ctx, mx, my, x, re, sy, "Slow Radius", String.format("%.1f blk", editSteeringSlowingRadius), 5) + ROW_GAP;
-        sy = toggle(ctx, mx, my, x, re, sy, "Steering Noise", tgAnim[9], 9) + ROW_GAP;
-        if (editSteeringNoiseEnabled) {
-            sy = cycler(ctx, mx, my, x, re, sy, "Noise Amp", String.format("%.2f blk", editSteeringNoiseAmplitude), 6) + ROW_GAP;
-        }
-        sy += 4;
-
         // Attack
         sy = section(ctx, x, re, sy, "Attack", EasyBlockGui.C_DANGER);
-        sy = toggle(ctx, mx, my, x, re, sy, "Enable Attack", tgAnim[5], 5) + ROW_GAP;
+        sy = toggle(ctx, mx, my, x, re, sy, "Enable Attack", tgAnim[6], 6) + ROW_GAP;
 
         if (editAttackEnabled) {
             if (editAttackDanger) {
-                sy = cycler(ctx, mx, my, x, re, sy, "Attack CPS", editAttackCPS + " CPS", 7) + ROW_GAP;
-                sy = toggle(ctx, mx, my, x, re, sy, "Random CPS (7\u201311)", tgAnim[7], 7) + ROW_GAP;
+                sy = cycler(ctx, mx, my, x, re, sy, "Attack CPS", editAttackCPS + " CPS", 3) + ROW_GAP;
+                sy = toggle(ctx, mx, my, x, re, sy, "Random CPS (7\u201311)", tgAnim[8], 8) + ROW_GAP;
             }
-            sy = toggle(ctx, mx, my, x, re, sy, "Whitelist only", tgAnim[6], 6) + ROW_GAP;
+            sy = toggle(ctx, mx, my, x, re, sy, "Whitelist only", tgAnim[7], 7) + ROW_GAP;
 
             // Range
             sy = rangeRow(ctx, mx, my, x, re, sy) + ROW_GAP;
@@ -395,8 +375,8 @@ public class MacroEditScreen extends BasePopupScreen {
             if (ey + EL_ROW_H <= y || ey >= y + listH) continue;
             boolean wl = editAttackWl.contains(id);
             boolean hv = hit(mx, my, x, ey, innerW, EL_ROW_H);
-            RoundedRectRenderer.draw(ctx, x, ey, innerW, EL_ROW_H, RB,
-                    wl ? 0xFF1A2B44 : (hv ? EasyBlockGui.C_NAV_ACT : EasyBlockGui.C_CARD));
+                RoundedRectRenderer.draw(ctx, x, ey, innerW, EL_ROW_H, RB,
+                    wl ? EasyBlockGui.C_CARD_SEL : (hv ? EasyBlockGui.C_NAV_ACT : EasyBlockGui.C_CARD));
             if (wl) ctx.fill(x, ey + 3, x + 3, ey + EL_ROW_H - 3, EasyBlockGui.C_ACCENT);
             String disp = id.contains(":") ? id.substring(id.indexOf(':') + 1) : id;
             disp = Character.toUpperCase(disp.charAt(0)) + disp.substring(1).replace('_', ' ');
@@ -447,7 +427,7 @@ public class MacroEditScreen extends BasePopupScreen {
         int gap  = 4;
         stepBtnW = (rw - gap * 3) / 4;
         String[] lbls = {"+ Add", "\u25B2 Up", "\u25BC Down", "\u2717 Rem"};
-        int[] bgs  = {EasyBlockGui.C_ACCENT,    EasyBlockGui.C_NAV_BG, EasyBlockGui.C_NAV_BG, 0xFF7F1D1D};
+        int[] bgs  = {EasyBlockGui.C_ACCENT, EasyBlockGui.C_NAV_BG, EasyBlockGui.C_NAV_BG, 0xFF8B3A3A};
         int[] hbgs = {EasyBlockGui.C_ACCENT_HI, EasyBlockGui.C_NAV_ACT, EasyBlockGui.C_NAV_ACT, EasyBlockGui.C_DANGER};
         stepBtnY = dy;
         for (int i = 0; i < 4; i++) {
@@ -506,7 +486,7 @@ public class MacroEditScreen extends BasePopupScreen {
         RoundedRectRenderer.draw(ctx, saveX,   footerBtnY, fbW, fbH, RB,
                 hoverSave   ? EasyBlockGui.C_ACCENT_HI : EasyBlockGui.C_ACCENT);
         RoundedRectRenderer.draw(ctx, cancelX, footerBtnY, fbW, fbH, RB,
-                hoverCancel ? EasyBlockGui.C_DANGER : 0xFF7F1D1D);
+            hoverCancel ? EasyBlockGui.C_DANGER : 0xFF8B3A3A);
         ctx.drawCenteredTextWithShadow(textRenderer, Text.literal("\u2714  Save"),
                 saveX + fbW / 2, footerBtnY + (fbH - 8) / 2, EasyBlockGui.C_TEXT);
         ctx.drawCenteredTextWithShadow(textRenderer, Text.literal("\u2717  Cancel"),
@@ -535,27 +515,26 @@ public class MacroEditScreen extends BasePopupScreen {
         }
 
         // Toggles
-        for (int i = 0; i < 10; i++) {
+        for (int i = 0; i < 9; i++) {
             int[] b = tgBounds[i];
             if (b[2] > 0 && hit(imx, imy, b[0], b[1], b[2], b[3])) {
                 switch (i) {
                     case 0 -> editLoop = !editLoop;
                     case 1 -> editSkipMismatch = !editSkipMismatch;
-                    case 2 -> editAttackDanger = !editAttackDanger;
-                    case 3 -> editOnlyGround = !editOnlyGround;
-                    case 4 -> editLockCam = !editLockCam;
-                    case 5 -> editAttackEnabled = !editAttackEnabled;
-                    case 6 -> editAttackWlOnly = !editAttackWlOnly;
-                    case 7 -> editRandomAttackCps = !editRandomAttackCps;
-                    case 8 -> editSteeringEnabled = !editSteeringEnabled;
-                    case 9 -> editSteeringNoiseEnabled = !editSteeringNoiseEnabled;
+                    case 2 -> editMineOnlyDefinedTargets = !editMineOnlyDefinedTargets;
+                    case 3 -> editAttackDanger = !editAttackDanger;
+                    case 4 -> editOnlyGround = !editOnlyGround;
+                    case 5 -> editLockCam = !editLockCam;
+                    case 6 -> editAttackEnabled = !editAttackEnabled;
+                    case 7 -> editAttackWlOnly = !editAttackWlOnly;
+                    case 8 -> editRandomAttackCps = !editRandomAttackCps;
                 }
                 return true;
             }
         }
 
         // Cyclers
-        for (int i = 0; i < 8; i++) {
+        for (int i = 0; i < 4; i++) {
             int[] c = cycBounds[i];
             if (c[3] == 0) continue;
             if (imy >= c[2] && imy < c[2] + 18) {
@@ -672,11 +651,7 @@ public class MacroEditScreen extends BasePopupScreen {
             case 0 -> editMiningDelay  = wrap(editMiningDelay  + dir * 50,   50,   2000);
             case 1 -> editMoveTimeout  = wrap(editMoveTimeout  + dir * 500,  500,  60000);
             case 2 -> { int s = Math.round(editArrivalRadius / 0.5f) + dir; editArrivalRadius = wrap(s, 1, 10) * 0.5f; }
-            case 3 -> editSteeringMaxSpeed = wrapStep(editSteeringMaxSpeed + dir * 0.01, 0.08, 0.40);
-            case 4 -> editSteeringAcceleration = wrapStep(editSteeringAcceleration + dir * 0.01, 0.05, 0.50);
-            case 5 -> editSteeringSlowingRadius = wrapStep(editSteeringSlowingRadius + dir * 0.1, 0.5, 6.0);
-            case 6 -> editSteeringNoiseAmplitude = wrapStep(editSteeringNoiseAmplitude + dir * 0.01, 0.0, 0.20);
-            case 7 -> editAttackCPS    = wrap(editAttackCPS    + dir,        1,    20);
+            case 3 -> editAttackCPS    = wrap(editAttackCPS    + dir,        1,    20);
         }
     }
 
@@ -684,28 +659,17 @@ public class MacroEditScreen extends BasePopupScreen {
         if (v < lo) return hi; if (v > hi) return lo; return v;
     }
 
-    private static double wrapStep(double v, double lo, double hi) {
-        if (v < lo) return hi;
-        if (v > hi) return lo;
-        return v;
-    }
-
     private void applyChanges() {
         if (editName != null && !editName.isEmpty()) macro.setName(editName);
         macro.setDescription(editDesc);
         MacroConfig c = macro.getConfig();
         c.setLoop(editLoop);               c.setSkipMismatch(editSkipMismatch);
+        c.setMineOnlyDefinedTargets(editMineOnlyDefinedTargets);
         c.setAttackDanger(editAttackDanger); c.setAttackCPS(editAttackCPS);
         c.setRandomAttackCps(editRandomAttackCps);
         c.setOnlyGround(editOnlyGround);   c.setLockCrosshair(editLockCam);
         c.setMiningDelay(editMiningDelay);  c.setMoveTimeout(editMoveTimeout);
         c.setArrivalRadius(editArrivalRadius); c.setAttackEnabled(editAttackEnabled);
-        c.setSteeringEnabled(editSteeringEnabled);
-        c.setSteeringMaxSpeed(editSteeringMaxSpeed);
-        c.setSteeringAcceleration(editSteeringAcceleration);
-        c.setSteeringSlowingRadius(editSteeringSlowingRadius);
-        c.setSteeringNoiseEnabled(editSteeringNoiseEnabled);
-        c.setSteeringNoiseAmplitude(editSteeringNoiseAmplitude);
         c.setAttackWhitelistOnly(editAttackWlOnly); c.setAttackWhitelist(editAttackWl);
         c.setAttackRange(editAttackRange);
         MacroModClient.getManager().save(macro);

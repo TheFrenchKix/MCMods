@@ -67,7 +67,7 @@ public class ProxyListScreen extends BasePopupScreen {
     }
 
     private void drawHeader(DrawContext ctx, int mx, int my) {
-        ctx.fill(px, py, px + pw, py + HH, 0xFF101018);
+        ctx.fill(px, py, px + pw, py + HH, EasyBlockGui.C_PANEL_HEAD);
         ctx.fill(px, py + HH - 1, px + pw, py + HH, EasyBlockGui.C_DIVIDER);
         ctx.drawTextWithShadow(textRenderer,
             Text.literal("\u00A7b\u26A1 \u00A7f\u00A7lProxy List"),
@@ -83,7 +83,7 @@ public class ProxyListScreen extends BasePopupScreen {
         String lbl = ge ? "ON" : "OFF";
         ctx.drawTextWithShadow(textRenderer, Text.literal(lbl),
             tx - textRenderer.getWidth(lbl) - 4, py + (HH - 8) / 2,
-            ge ? 0xFF55FF55 : 0xFFAAAAAA);
+            ge ? EasyBlockGui.C_SUCCESS : EasyBlockGui.C_TEXT3);
     }
 
     private void drawList(DrawContext ctx, int mx, int my) {
@@ -117,13 +117,13 @@ public class ProxyListScreen extends BasePopupScreen {
                              && my >= rowY    && my < rowY + ROW_H;
 
             if (isActive)
-                ctx.fill(px + 6, rowY, px + pw - 6, rowY + ROW_H - 2, 0x33AADDFF);
+                ctx.fill(px + 6, rowY, px + pw - 6, rowY + ROW_H - 2, 0x3342BBC6);
             else if (rowHit)
                 ctx.fill(px + 6, rowY, px + pw - 6, rowY + ROW_H - 2, 0x11FFFFFF);
 
             // Radio button
             int cx = px + 6 + 11, cy = rowY + ROW_H / 2;
-            drawRadio(ctx, cx, cy, 5, isActive ? 0xFF4488FF : 0xFF444466, isActive);
+            drawRadio(ctx, cx, cy, 5, isActive ? EasyBlockGui.C_ACCENT : EasyBlockGui.C_NAV_BG, isActive);
 
             // Delete button (rightmost)
             int delW = 22, delH = 14;
@@ -131,7 +131,7 @@ public class ProxyListScreen extends BasePopupScreen {
             int delY = rowY + (ROW_H - delH) / 2;
             boolean hDel = mx >= delX && mx < delX + delW && my >= delY && my < delY + delH;
             if (hDel) hoverDel = idx;
-            RoundedRectRenderer.draw(ctx, delX, delY, delW, delH, 3, hDel ? 0xFFCC2222 : 0xFF882222);
+            RoundedRectRenderer.draw(ctx, delX, delY, delW, delH, 3, hDel ? EasyBlockGui.C_DANGER : 0xFF8B3A3A);
             ctx.drawCenteredTextWithShadow(textRenderer, Text.literal("\u00D7"),
                 delX + delW / 2, delY + 3, EasyBlockGui.C_TEXT);
 
@@ -142,7 +142,7 @@ public class ProxyListScreen extends BasePopupScreen {
             boolean hEdit = mx >= editX && mx < editX + editW && my >= editY && my < editY + editH;
             if (hEdit) hoverEdit = idx;
             RoundedRectRenderer.draw(ctx, editX, editY, editW, editH, 3,
-                hEdit ? 0xFF3A6AAA : EasyBlockGui.C_ACCENT);
+                hEdit ? EasyBlockGui.C_ACCENT_HI : EasyBlockGui.C_ACCENT);
             ctx.drawCenteredTextWithShadow(textRenderer, Text.literal("Edit"),
                 editX + editW / 2, editY + 3, EasyBlockGui.C_TEXT);
 
@@ -155,7 +155,7 @@ public class ProxyListScreen extends BasePopupScreen {
             boolean hasName = cfg.getName() != null && !cfg.getName().isEmpty();
             String primary = hasName ? cfg.getName() : proxyUrl(cfg);
             primary = truncate(primary, maxLabelW);
-            int labelColor = isActive ? 0xFFDDEEFF : EasyBlockGui.C_TEXT;
+            int labelColor = isActive ? EasyBlockGui.C_TEXT2 : EasyBlockGui.C_TEXT;
             ctx.drawTextWithShadow(textRenderer, Text.literal(primary),
                 labelX, cy - (hasName ? 7 : 4), labelColor);
 
@@ -178,8 +178,8 @@ public class ProxyListScreen extends BasePopupScreen {
             ctx.fill(cx - r + 2, cy - r + 3, cx + r - 2, cy + r - 3, EasyBlockGui.C_BG);
             ctx.fill(cx - r + 3, cy - r + 2, cx + r - 3, cy + r - 2, EasyBlockGui.C_BG);
         } else {
-            ctx.fill(cx - r + 2, cy - r + 3, cx + r - 2, cy + r - 3, 0xFF99CCFF);
-            ctx.fill(cx - r + 3, cy - r + 2, cx + r - 3, cy + r - 2, 0xFF99CCFF);
+            ctx.fill(cx - r + 2, cy - r + 3, cx + r - 2, cy + r - 3, EasyBlockGui.C_ACCENT_HI);
+            ctx.fill(cx - r + 3, cy - r + 2, cx + r - 3, cy + r - 2, EasyBlockGui.C_ACCENT_HI);
         }
     }
 
@@ -192,7 +192,7 @@ public class ProxyListScreen extends BasePopupScreen {
         hoverAdd   = drawBtn(ctx, startX,          btnY, btnW, btnH, "\u271A Add Proxy",
             mx, my, EasyBlockGui.C_ACCENT);
         hoverClose = drawBtn(ctx, startX + btnW + gap, btnY, btnW, btnH, "Close",
-            mx, my, 0xFF882222);
+            mx, my, EasyBlockGui.C_DANGER);
     }
 
     private boolean drawBtn(DrawContext ctx, int x, int y, int w, int h,

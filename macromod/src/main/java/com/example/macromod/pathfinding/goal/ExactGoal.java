@@ -26,17 +26,17 @@ public class ExactGoal extends Goal {
     @Override
     public double calcHCost(BaseBlockPos pos) {
         final int gx = this.pos.getX();
-        final int gy = this.pos.getY();
         final int gz = this.pos.getZ();
         final int px = pos.getX();
-        final int py = pos.getY();
         final int pz = pos.getZ();
         int dMax = Math.max(Math.abs(px - gx), Math.abs(pz - gz));
         int dMin = Math.min(Math.abs(px - gx), Math.abs(pz - gz));
 
         final double cost_mult_diagonal = ActionCosts.get().WALK_SPRINT_DIAGONAL / ActionCosts.get().WALK_SPRINT_STRAIGHT;
-        return (dMin * cost_mult_diagonal + (dMax - dMin)) * ActionCosts.get().WALK_SPRINT_STRAIGHT + Math.abs(py - gy)
-                * (py < gy ? ActionCosts.get().STEP_DOWN_STRAIGHT : ActionCosts.get().STEP_UP_STRAIGHT);
+        // Keep a guaranteed lower bound: horizontal octile only.
+        // Vertical actions have multiple mechanics (step, fall, pillar, jump), and
+        // using a too-strong Y term can overestimate and break A* guarantees.
+        return (dMin * cost_mult_diagonal + (dMax - dMin)) * ActionCosts.get().WALK_SPRINT_STRAIGHT;
     }
 
 

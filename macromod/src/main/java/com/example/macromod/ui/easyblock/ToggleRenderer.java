@@ -12,8 +12,8 @@ public final class ToggleRenderer {
     public static final int TOGGLE_W = 30;
     public static final int TOGGLE_H = 14;
 
-    private static final int C_OFF_BG  = 0xFF3A3A4A;
-    private static final int C_ON_BG   = 0xFF4677FF;
+    private static final int C_OFF_BG  = 0xFF3A5663;
+    private static final int C_ON_BG   = 0xFF2F9FAA;
     private static final int C_KNOB    = 0xFFFFFFFF;
 
     /**

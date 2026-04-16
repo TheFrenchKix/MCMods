@@ -142,6 +142,6 @@ public class FreelookManager {
     /** Returns the freelook-specific FOV (degrees). */
     public int getFreelookFov() { return freelookFov; }
 
-    /** Sets the freelook FOV (clamped 30–110). Does NOT touch MC's global FOV. */
-    public void setFreelookFov(int fov) { this.freelookFov = Math.max(30, Math.min(110, fov)); }
+    /** Sets the freelook FOV (clamped 30–200). Does NOT touch MC's global FOV. */
+    public void setFreelookFov(int fov) { this.freelookFov = Math.max(30, Math.min(200, fov)); }
 }

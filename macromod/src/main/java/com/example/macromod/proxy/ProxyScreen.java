@@ -119,7 +119,7 @@ public class ProxyScreen extends BasePopupScreen {
         RoundedRectRenderer.draw(ctx, px, py, pw, PH, R, EasyBlockGui.C_BG);
 
         // Header
-        ctx.fill(px, py, px + pw, py + HH, 0xFF101018);
+        ctx.fill(px, py, px + pw, py + HH, EasyBlockGui.C_PANEL_HEAD);
         ctx.fill(px, py + HH - 1, px + pw, py + HH, EasyBlockGui.C_DIVIDER);
         String icon = editIndex < 0 ? "\u00A7b\u271A " : "\u00A7b\u270E ";
         ctx.drawTextWithShadow(textRenderer,
@@ -145,7 +145,7 @@ public class ProxyScreen extends BasePopupScreen {
         // URL
         ctx.drawTextWithShadow(textRenderer,
             Text.literal("Paste URL  (protocol://[user:pass@]host:port)"),
-            lx, ct + 36, 0xFF888899);
+            lx, ct + 36, EasyBlockGui.C_TEXT3);
         drawFieldBg(ctx, urlField);
         urlField.render(ctx, mx, my, 0);
 
@@ -187,18 +187,18 @@ public class ProxyScreen extends BasePopupScreen {
 
         hoverProtoLeft = mx >= startX && mx < startX + arrowW && my >= btnY && my < btnY + btnH;
         RoundedRectRenderer.draw(ctx, startX, btnY, arrowW, btnH, 4,
-            hoverProtoLeft ? 0xFF2A2A40 : 0xFF1A1A28);
+            hoverProtoLeft ? EasyBlockGui.C_NAV_ACT : EasyBlockGui.C_NAV_BG);
         ctx.drawCenteredTextWithShadow(textRenderer, Text.literal("\u25C4"),
             startX + arrowW / 2, btnY + 3, EasyBlockGui.C_TEXT2);
 
-        ctx.fill(startX + arrowW, btnY, startX + arrowW + labelW, btnY + btnH, 0xFF1A1A28);
+        ctx.fill(startX + arrowW, btnY, startX + arrowW + labelW, btnY + btnH, EasyBlockGui.C_NAV_BG);
         ctx.drawCenteredTextWithShadow(textRenderer, Text.literal(proto),
-            startX + arrowW + labelW / 2, btnY + 3, 0xFF00DDFF);
+            startX + arrowW + labelW / 2, btnY + 3, EasyBlockGui.C_ACCENT_HI);
 
         int rx = startX + arrowW + labelW;
         hoverProtoRight = mx >= rx && mx < rx + arrowW && my >= btnY && my < btnY + btnH;
         RoundedRectRenderer.draw(ctx, rx, btnY, arrowW, btnH, 4,
-            hoverProtoRight ? 0xFF2A2A40 : 0xFF1A1A28);
+            hoverProtoRight ? EasyBlockGui.C_NAV_ACT : EasyBlockGui.C_NAV_BG);
         ctx.drawCenteredTextWithShadow(textRenderer, Text.literal("\u25BA"),
             rx + arrowW / 2, btnY + 3, EasyBlockGui.C_TEXT2);
     }
@@ -210,7 +210,7 @@ public class ProxyScreen extends BasePopupScreen {
     private void drawFieldBg(DrawContext ctx, TextFieldWidget f) {
         int fx = f.getX() - 2, fy = f.getY() - 2;
         int fw = f.getWidth() + 4, fh = FIELD_H + 4;
-        ctx.fill(fx, fy, fx + fw, fy + fh, 0xFF1A1A28);
+        ctx.fill(fx, fy, fx + fw, fy + fh, EasyBlockGui.C_CARD);
         ctx.fill(fx, fy + fh - 1, fx + fw, fy + fh, EasyBlockGui.C_DIVIDER);
     }
 
@@ -219,8 +219,8 @@ public class ProxyScreen extends BasePopupScreen {
         String text; int color;
         switch (testState) {
             case TESTING -> { text = "Testing...";                    color = 0xFFFFDD00; }
-            case VALID   -> { text = "\u2705 Valid  " + testInfo;     color = 0xFF55FF55; }
-            case INVALID -> { text = "\u274C Invalid  " + testInfo;   color = 0xFFFF5555; }
+            case VALID   -> { text = "\u2705 Valid  " + testInfo;     color = EasyBlockGui.C_SUCCESS; }
+            case INVALID -> { text = "\u274C Invalid  " + testInfo;   color = EasyBlockGui.C_DANGER; }
             default      -> { text = "Not tested";                    color = EasyBlockGui.C_TEXT3; }
         }
         ctx.drawCenteredTextWithShadow(textRenderer, Text.literal(text), px + pw / 2, sy, color);
@@ -231,14 +231,14 @@ public class ProxyScreen extends BasePopupScreen {
         int btnY = py + PH - FH + (FH - btnH) / 2;
         int sx   = px + (pw - (btnW * 4 + gap * 3)) / 2;
 
-        hoverTest   = drawBtn(ctx, sx,                     btnY, btnW, btnH, "Test",
-            mx, my, testState == TestState.TESTING ? 0xFF555555 : EasyBlockGui.C_ACCENT);
-        hoverClear  = drawBtn(ctx, sx + (btnW + gap),      btnY, btnW, btnH, "Clear",
-            mx, my, 0xFF555566);
-        hoverSave   = drawBtn(ctx, sx + (btnW + gap) * 2,  btnY, btnW, btnH, "Save",
-            mx, my, 0xFF267A26);
-        hoverCancel = drawBtn(ctx, sx + (btnW + gap) * 3,  btnY, btnW, btnH, "Cancel",
-            mx, my, 0xFF882222);
+        hoverTest   = drawBtn(ctx, sx,                    btnY, btnW, btnH, "Test",
+            mx, my, testState == TestState.TESTING ? 0xFF4B5D66 : EasyBlockGui.C_ACCENT);
+        hoverClear  = drawBtn(ctx, sx + (btnW + gap),     btnY, btnW, btnH, "Clear",
+            mx, my, EasyBlockGui.C_NAV_BG);
+        hoverSave   = drawBtn(ctx, sx + (btnW + gap) * 2, btnY, btnW, btnH, "Save",
+            mx, my, EasyBlockGui.C_SUCCESS);
+        hoverCancel = drawBtn(ctx, sx + (btnW + gap) * 3, btnY, btnW, btnH, "Cancel",
+            mx, my, EasyBlockGui.C_DANGER);
     }
 
     private boolean drawBtn(DrawContext ctx, int x, int y, int w, int h,

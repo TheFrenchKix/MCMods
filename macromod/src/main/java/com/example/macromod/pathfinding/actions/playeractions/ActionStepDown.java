@@ -115,7 +115,7 @@ public class ActionStepDown extends Action {
 
             boolean traversable0 = ActionUtils.canMoveThrough(p0) && BlockUtils.isLoaded(p0);
             ;
-            boolean traversable1 = ActionUtils.canMoveThrough(p0) && BlockUtils.isLoaded(p1);
+            boolean traversable1 = ActionUtils.canMoveThrough(p1) && BlockUtils.isLoaded(p1);
             ;
 
             boolean avoid0 = BlockUtils.avoidTouching(p0) || BlockUtils.avoidTouching(p0.add(Direction.UP));

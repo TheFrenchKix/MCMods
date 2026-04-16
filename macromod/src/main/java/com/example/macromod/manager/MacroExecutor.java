@@ -2,16 +2,15 @@ package com.example.macromod.manager;
 
 import com.example.macromod.MacroModClient;
 import com.example.macromod.manager.AutoAttackManager;
-import com.example.macromod.data.blockpos.BaseBlockPos;
 import com.example.macromod.model.*;
 import com.example.macromod.pathfinding.MovementHelper;
 import com.example.macromod.pathfinding.PathHandler;
 import com.example.macromod.pathfinding.PathFinder;
 import com.example.macromod.pathfinding.SmoothAim;
+import com.example.macromod.pathfinding.oringo.OringoPathModule;
 import com.example.macromod.util.HumanReactionTime;
 
 import java.util.HashSet;
-import com.example.macromod.pathfinding.goal.ExactGoal;
 import com.example.macromod.util.BlockUtils;
 import com.example.macromod.util.PlayerUtils;
 import com.example.macromod.util.MouseInputHelper;
@@ -41,8 +40,6 @@ import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Random;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
 
 /**
  * State-machine-based macro executor. Handles pathfinding, movement, and block mining.
@@ -61,24 +58,11 @@ public class MacroExecutor {
     private static final Logger LOGGER = LoggerFactory.getLogger("macromod");
     private final MovementHelper movementHelper;
     private final PathFinder fallbackPathFinder = new PathFinder();
-    private final ExecutorService pathfindingExecutor = Executors.newSingleThreadExecutor(r -> {
-        Thread t = new Thread(r, "macromod-pathfinding");
-        t.setDaemon(true);
-        return t;
-    });
+    private final OringoPathModule oringoPathModule = new OringoPathModule();
 
-    // ─── Debug throttle ─────────────────────────────────────────
-    private long lastDebugMs = 0L;
-    private static final long DEBUG_INTERVAL_MS = 500L; // log at most every 500 ms
-    private static final double LOOKAHEAD_CORNER_BLEND = 0.20;
-    private static final double LOOKAHEAD_STRAIGHT_BLEND = 0.62;
-    private static final double LOOKAHEAD_DEFAULT_BLEND = 0.45;
-    private static final long MOVING_STUCK_TIMEOUT_MS = 4500L;
-    private static final double MOVING_MIN_PROGRESS = 0.35;
-
-    // ─── End-of-path centering ──────────────────────────────────
-    /** True when at destination but still centering before MINING */
-    private boolean isWaitingToCenter = false;
+    // ─── Metrics snapshot cadence ───────────────────────────────
+    private static final long METRICS_SNAPSHOT_INTERVAL_MS = 5000L;
+    private long lastMetricsSnapshotMs = 0L;
 
     // ─── Execution state ────────────────────────────────────────
     private MacroState state = MacroState.IDLE;
@@ -97,12 +81,6 @@ public class MacroExecutor {
     private List<List<BlockPos>> precomputedPaths;
     private int precomputeIndex;
     private BlockPos precomputeFromPos;
-    /** True while the background thread is computing a path for precomputeIndex. */
-    private volatile boolean precomputeBusy = false;
-    /** True while the background thread is pipelining the NEXT step's path. */
-    private volatile boolean pipelineBusy = false;
-    /** The step index currently being pipelined (-1 = none). */
-    private volatile int pipelineStepIndex = -1;
 
     // ─── Mining ─────────────────────────────────────────────────
     private boolean isMiningBlock;
@@ -111,7 +89,11 @@ public class MacroExecutor {
     /** System time when aimLocked first became true. -1 when not locked. */
     private long aimLockedAtMs = -1L;
     /** Milliseconds to wait after crosshair confirms on block before pressing the attack key. */
-    private static final long MINING_CLICK_DWELL_MS = 60L;
+    private static final long MINING_CLICK_DWELL_MS = 130L;
+    /** Max time to persist mining before giving up (accounts for latency and slower tools). */
+    private static final long MINING_TIMEOUT_MS = 6000L;
+    /** Active block lock: once selected, keep mining this block until mined/skipped. */
+    private BlockPos activeMiningTarget = null;
     private long lastMineTime;
     private static final Random MINE_RAND = new Random();
 
@@ -128,7 +110,7 @@ public class MacroExecutor {
     private static final float ATTACK_COOLDOWN_THRESHOLD = 0.9f;
     private static final long  MACRO_ATTACK_DWELL_MS     = 150L;
     private static final int   MACRO_MIN_LOCK_TICKS      = 10;
-    private static final int   MACRO_MAX_NO_LOS_TICKS    = 3;
+    private static final int   MACRO_MAX_NO_LOS_TICKS    = 1;
     private static final float ATTACK_RELEASE_BUFFER     = 1.5f;
     /** Macro melee reach distance in blocks (matching AutoFishing close mode). */
     private static final float MACRO_MELEE_REACH         = 2.5f;
@@ -142,10 +124,12 @@ public class MacroExecutor {
     private Vec3d attackChaseLastPos  = null;
     private long  attackChaseStuckMs  = -1L;
     private boolean attackChaseJumped = false;
-    private long attackLastJumpMs = -1L;
 
     // ─── Entity elimination mode (attackDanger) ─────────────────
     private boolean isEliminatingEnemies = false;
+
+    // ─── Vanilla autojump ────────────────────────────────────────
+    private boolean previousAutoJump = false;
 
     // ─── Pause for standalone AutoAttackManager ────────────────────
     private boolean pausedForAutoAttack = false;
@@ -160,7 +144,7 @@ public class MacroExecutor {
     /** Switch strafe direction after this many ms. */
     private static final long STRAFE_SWITCH_MS  = 700L;
     /** Give up and skip the block after this many ms of strafing. */
-    private static final long STRAFE_GIVE_UP_MS = 500L;
+    private static final long STRAFE_GIVE_UP_MS = 2500L;
 
     // ─── Chunk loading ──────────────────────────────────────────
     private long chunkWaitStartMs = -1L;
@@ -170,8 +154,10 @@ public class MacroExecutor {
     /** Player-centered scan sphere radius (matches interaction range). */
     private static final double PLAYER_REACH_RADIUS    = 4.5;
     private static final double PLAYER_REACH_RADIUS_SQ = PLAYER_REACH_RADIUS * PLAYER_REACH_RADIUS;
+    /** Integer loop bound for scan cubes (4 is enough for a 4.5 sphere and is faster than 5). */
+    private static final int RADIUS_SCAN_RADIUS = 4;
     /** Re-trigger scan when player moves this far (squared) from the last scan origin. */
-    private static final double RESCAN_MOVE_THRESHOLD_SQ = 2.0 * 2.0;
+    private static final double RESCAN_MOVE_THRESHOLD_SQ = 3.0 * 3.0;
     /** Player block position at the last scanRadiusTargets call — drives dynamic rescan. */
     private BlockPos lastScanPlayerPos = null;
     // ─── Statistics ─────────────────────────────────────────────
@@ -180,6 +166,51 @@ public class MacroExecutor {
     private long startTime;
     private double totalDistance;
     private Vec3d lastDistCheckPos;
+
+    // ─── Robustness/perf metrics ────────────────────────────────
+    private long tickCount;
+    private long tickTotalNs;
+    private long tickMaxNs;
+
+    private long precomputedPathQueries;
+    private long precomputedPathSuccess;
+    private long precomputedPathNodesTotal;
+    private long precomputedPathTotalNs;
+    private long precomputedPathMaxNs;
+
+    private long livePathQueries;
+    private long livePathSuccess;
+    private long livePathNodesTotal;
+    private long livePathTotalNs;
+    private long livePathMaxNs;
+
+    private long repathCount;
+    private long stuckRecoveries;
+    private long navigationTimeouts;
+    private long chunkWaitEvents;
+    private long chunkWaitTimeoutSkips;
+    private long chunkWaitTotalMs;
+
+    private long autoAttackPauseCount;
+    private long autoAttackPauseTotalMs;
+    private long autoAttackPauseStartMs = -1L;
+
+    private long eliminationModeCount;
+    private long eliminationModeTotalMs;
+    private long eliminationModeStartMs = -1L;
+
+    private long miningSkipUnripe;
+    private long miningSkipRange;
+    private long miningSkipNoLos;
+    private long miningSkipBlockChanged;
+    private long miningSkipBlockReplaced;
+    private long miningSkipTimeout;
+
+    private long attackLostLosDrops;
+    private long attackChaseStuckSkips;
+    private long attackChaseJumpAttempts;
+
+    private boolean metricsSummaryLogged = false;
 
     // ─── State before pause ─────────────────────────────────────
     private MacroState stateBeforePause;
@@ -200,7 +231,10 @@ public class MacroExecutor {
 
     public MacroExecutor(SmoothAim smoothAim) {
         this.movementHelper = new MovementHelper(smoothAim);
-        LOGGER.info("MacroExecutor initialized");
+        // Keep fallback pathfinder quiet; this class now emits structured metrics logs.
+        this.fallbackPathFinder.setDebugLogging(false);
+        LOGGER.info("[macro.metrics.lifecycle] executorReady pathfinderDebug={} snapshotIntervalMs={}",
+            false, METRICS_SNAPSHOT_INTERVAL_MS);
     }
 
     /**
@@ -244,6 +278,7 @@ public class MacroExecutor {
         startTime = System.currentTimeMillis();
         totalDistance = 0;
         lastDistCheckPos = null;
+        resetRunMetrics();
 
         // Pre-compute paths for all steps so navigation never stalls between steps
         precomputedPaths = new ArrayList<>(currentMacro.getSteps().size());
@@ -254,9 +289,22 @@ public class MacroExecutor {
         MinecraftClient startClient = MinecraftClient.getInstance();
         precomputeFromPos = startClient.player != null ? startClient.player.getBlockPos() : null;
         precomputeIndex = 0;
+
+        // Enable vanilla autojump for obstacle climbing (save previous setting)
+        if (startClient.options != null) {
+            previousAutoJump = startClient.options.getAutoJump().getValue();
+            startClient.options.getAutoJump().setValue(true);
+        }
+
         state = MacroState.PRECOMPUTING;
         
-        LOGGER.info("Starting macro '{}' (loop={})", macro.getName(), macro.getConfig().isLoop());
+        LOGGER.info("[macro.metrics.lifecycle] macroStart name={} loop={} steps={} onlyGround={} attackEnabled={} attackDanger={}",
+            macro.getName(),
+            macro.getConfig().isLoop(),
+            macro.getSteps().size(),
+            macro.getConfig().isOnlyGround(),
+            macro.getConfig().isAttackEnabled(),
+            macro.getConfig().isAttackDanger());
 
         if (currentMacro.getConfig().isLoop()) {
             sendMessage("macromod.chat.macro_started_loop", Formatting.GREEN, macro.getName());
@@ -289,20 +337,36 @@ public class MacroExecutor {
         
         // Reset stats
         blocksMinedTotal = 0;
+        blocksSkippedTotal = 0;
         state = MacroState.LINE_FARMING;
         startTime = System.currentTimeMillis();
+        totalDistance = 0;
+        lastDistCheckPos = null;
+        resetRunMetrics();
 
         sendMessage("macromod.chat.macro_started", Formatting.GREEN, "Line Farm");
-        LOGGER.info("Starting line farm mode");
+        LOGGER.info("[macro.metrics.lifecycle] lineFarmStart width={} direction={}", lineFarmWidth, lineFarmDirection);
     }
 
     /**
      * Stops the macro execution immediately, releasing all inputs.
      */
     public void stop() {
+        stop("manual_stop");
+    }
+
+    private void stop(String reason) {
         if (state == MacroState.IDLE) {
             sendMessage("macromod.chat.no_active_macro", Formatting.YELLOW);
             return;
+        }
+
+        MacroState stateBeforeStop = state;
+
+        // Restore autojump setting
+        MinecraftClient stopClient = MinecraftClient.getInstance();
+        if (stopClient.options != null) {
+            stopClient.options.getAutoJump().setValue(previousAutoJump);
         }
 
         movementHelper.releaseAllInputs();
@@ -322,6 +386,7 @@ public class MacroExecutor {
 
         // Print stats if we ran for a while
         if (currentMacro != null && startTime > 0) {
+            logMetricsSummary(reason);
             printStats();
         }
 
@@ -330,11 +395,9 @@ public class MacroExecutor {
         currentPath = null;
         precomputedPaths = null;
         precomputeFromPos = null;
-        precomputeBusy = false;
-        pipelineBusy = false;
-        pipelineStepIndex = -1;
         sendMessage("macromod.chat.macro_stopped", Formatting.YELLOW);
-        LOGGER.info("Macro stopped");
+        LOGGER.info("[macro.metrics.lifecycle] macroStop reason={} stateBeforeStop={} step={} mined={} skipped={}",
+            reason, stateBeforeStop, currentStepIndex, blocksMinedTotal, blocksSkippedTotal);
     }
 
     /**
@@ -361,6 +424,8 @@ public class MacroExecutor {
         attackChaseStuckMs = -1L;
         attackChaseJumped = false;
         sendMessage("macromod.chat.macro_paused", Formatting.YELLOW);
+        LOGGER.info("[macro.metrics.lifecycle] macroPause stateBeforePause={} step={}",
+            stateBeforePause, currentStepIndex);
     }
 
     /**
@@ -371,6 +436,7 @@ public class MacroExecutor {
         state = stateBeforePause != null ? stateBeforePause : MacroState.PATHFINDING;
         stateBeforePause = null;
         sendMessage("macromod.chat.macro_resumed", Formatting.GREEN);
+        LOGGER.info("[macro.metrics.lifecycle] macroResume state={} step={}", state, currentStepIndex);
     }
 
     /**
@@ -381,157 +447,142 @@ public class MacroExecutor {
                 || state == MacroState.ERROR || state == MacroState.PAUSED) {
             return;
         }
+        long tickStartNs = System.nanoTime();
+        try {
+            MinecraftClient client = MinecraftClient.getInstance();
+            ClientPlayerEntity player = client.player;
+            ClientWorld world = client.world;
+            if (player == null || world == null) return;
 
-        MinecraftClient client = MinecraftClient.getInstance();
-        ClientPlayerEntity player = client.player;
-        ClientWorld world = client.world;
-        if (player == null || world == null) return;
-
-        // Stop macro if player dies
-        if (player.isDead() || player.getHealth() <= 0) {
-            LOGGER.warn("Player died! Stopping macro.");
-            stop();
-            sendMessage("macromod.chat.macro_stopped_death", Formatting.RED);
-            return;
-        }
-
-        // Track distance
-        if (lastDistCheckPos != null) {
-            totalDistance += new Vec3d(player.getX(), player.getY(), player.getZ()).distanceTo(lastDistCheckPos);
-        }
-        lastDistCheckPos = new Vec3d(player.getX(), player.getY(), player.getZ());
-
-        // ───────────────────────────────────────────────────────────────
-        // Pause macro movement whenever the standalone AutoAttackManager (K key)
-        // has an active target. Resume with fresh pathfinding when target clears.
-        // ───────────────────────────────────────────────────────────────
-        AutoAttackManager aam = AutoAttackManager.getInstance();
-        boolean aamHasTarget = aam != null && aam.isEnabled() && aam.getCurrentTarget() != null;
-        if (aamHasTarget && !pausedForAutoAttack) {
-            // Just acquired a target — freeze all macro movement
-            pausedForAutoAttack = true;
-            movementHelper.releaseAllInputs();
-            aimLocked = false;
-            aimLockedAtMs = -1L;
-            isMiningBlock = false;
-            if (client.options != null) client.options.attackKey.setPressed(false);
-            LOGGER.info("[MacroExecutor] Paused for AutoAttack target");
-        }
-        if (!aamHasTarget && pausedForAutoAttack) {
-            // Target cleared — resume macro, try snapping to existing path first
-            pausedForAutoAttack = false;
-            if (state == MacroState.MOVING || state == MacroState.PATHFINDING
-                    || state == MacroState.MINING || state == MacroState.NEXT_STEP) {
-
-                // Try position snapping: find nearest point on existing path
-                List<BlockPos> existingPath = (precomputedPaths != null && currentStepIndex < precomputedPaths.size())
-                        ? precomputedPaths.get(currentStepIndex) : null;
-                int snapIdx = snapToPath(player, existingPath);
-
-                if (snapIdx >= 0 && existingPath != null) {
-                    // Snap succeeded — resume from the nearest path node
-                    currentPath = existingPath;
-                    currentPathIndex = snapIdx;
-                    moveStartMs = System.currentTimeMillis();
-                    stuckSince  = -1L;
-                    lastPosition = new Vec3d(player.getX(), player.getY(), player.getZ());
-                    state = MacroState.MOVING;
-                    LOGGER.info("[MacroExecutor] Resumed after AutoAttack, snapped to path index {}", snapIdx);
-                } else {
-                    // Can't snap — invalidate and re-pathfind from scratch
-                    currentPath = null;
-                    currentPathIndex = 0;
-                    if (precomputedPaths != null && currentStepIndex < precomputedPaths.size()) {
-                        precomputedPaths.set(currentStepIndex, null);
-                    }
-                    moveStartMs = System.currentTimeMillis();
-                    stuckSince  = -1L;
-                    lastPosition = new Vec3d(player.getX(), player.getY(), player.getZ());
-                    state = MacroState.PATHFINDING;
-                    LOGGER.info("[MacroExecutor] Resumed after AutoAttack, re-pathfinding from {}", player.getBlockPos());
-                }
+            // Stop macro if player dies
+            if (player.isDead() || player.getHealth() <= 0) {
+                LOGGER.info("[macro.metrics.robustness] playerDeathStop step={} health={}",
+                    currentStepIndex, player.getHealth());
+                stop("player_death");
+                sendMessage("macromod.chat.macro_stopped_death", Formatting.RED);
+                return;
             }
-        }
-        if (pausedForAutoAttack) {
-            return; // Suspend state machine while entity is being attacked
-        }
 
-        // Entity attack system with attackDanger mode
-        boolean isDuringMacro = state != MacroState.IDLE && state != MacroState.COMPLETED && state != MacroState.ERROR;
-        if (isDuringMacro && currentMacro.getConfig().isAttackDanger()) {
-            // Check if enemies are nearby
-            boolean hasEnemiesNearby = hasEntitiesInRange(player, world, currentMacro.getConfig(), true);
-            
-            if (hasEnemiesNearby && !isEliminatingEnemies) {
-                // Enter entity elimination mode — fully cancel current route
-                isEliminatingEnemies = true;
-                LOGGER.info("Entering entity elimination mode from state {}", state);
+            // Track distance
+            if (lastDistCheckPos != null) {
+                totalDistance += new Vec3d(player.getX(), player.getY(), player.getZ()).distanceTo(lastDistCheckPos);
+            }
+            lastDistCheckPos = new Vec3d(player.getX(), player.getY(), player.getZ());
+
+            // Pause macro movement whenever the standalone AutoAttackManager (K key)
+            // has an active target. Resume with fresh pathfinding when target clears.
+            AutoAttackManager aam = AutoAttackManager.getInstance();
+            boolean aamHasTarget = aam != null && aam.isEnabled() && aam.getCurrentTarget() != null;
+            if (aamHasTarget && !pausedForAutoAttack) {
+                pausedForAutoAttack = true;
+                autoAttackPauseCount++;
+                autoAttackPauseStartMs = System.currentTimeMillis();
                 movementHelper.releaseAllInputs();
-                // Clear route so path-following keys don't interfere with attack movement
-                currentPath = null;
-                currentPathIndex = 0;
-                attackTarget = null;
-                attackChaseStartMs = -1L;
-                PathHandler _ph = MacroModClient.getPathHandler();
-                if (_ph != null) _ph.cancelPath();
+                aimLocked = false;
+                aimLockedAtMs = -1L;
+                isMiningBlock = false;
+                if (client.options != null) client.options.attackKey.setPressed(false);
+                LOGGER.info("[macro.metrics.robustness] autoAttackPause state={} step={}",
+                    state, currentStepIndex);
             }
-        }
-
-        // Check if we should exit entity elimination mode
-        if (isEliminatingEnemies) {
-            boolean stillHasEnemies = hasEntitiesInRange(player, world, currentMacro.getConfig(), true);
-            if (!stillHasEnemies) {
-                // Exit entity elimination mode — try snap/splice before full repath
-                isEliminatingEnemies = false;
-                attackTarget = null;
-                attackChaseStartMs = -1L;
-
-                List<BlockPos> existingPath = (precomputedPaths != null && currentStepIndex < precomputedPaths.size())
-                        ? precomputedPaths.get(currentStepIndex) : null;
-                int snapIdx = snapToPath(player, existingPath);
-
-                if (snapIdx >= 0 && existingPath != null) {
-                    // Snap to nearest path node
-                    currentPath = existingPath;
-                    currentPathIndex = snapIdx;
-                    moveStartMs = System.currentTimeMillis();
-                    stuckSince  = -1L;
-                    lastPosition = new Vec3d(player.getX(), player.getY(), player.getZ());
-                    state = MacroState.MOVING;
-                    LOGGER.info("Enemies eliminated. Snapped to path index {} from {}", snapIdx, player.getBlockPos());
-                } else {
-                    // Full repath
+            if (!aamHasTarget && pausedForAutoAttack) {
+                pausedForAutoAttack = false;
+                if (autoAttackPauseStartMs >= 0) {
+                    autoAttackPauseTotalMs += System.currentTimeMillis() - autoAttackPauseStartMs;
+                    autoAttackPauseStartMs = -1L;
+                }
+                if (state == MacroState.MOVING || state == MacroState.PATHFINDING
+                        || state == MacroState.MINING || state == MacroState.NEXT_STEP) {
                     currentPath = null;
                     currentPathIndex = 0;
-                    if (precomputedPaths != null && currentStepIndex < precomputedPaths.size()) {
-                        precomputedPaths.set(currentStepIndex, null);
-                    }
                     moveStartMs = System.currentTimeMillis();
                     stuckSince  = -1L;
                     lastPosition = new Vec3d(player.getX(), player.getY(), player.getZ());
                     state = MacroState.PATHFINDING;
-                    LOGGER.info("Enemies eliminated. Re-pathfinding from {}", player.getBlockPos());
+                    repathCount++;
+                    LOGGER.info("[macro.metrics.robustness] autoAttackResume repath=true step={}", currentStepIndex);
+                } else {
+                    LOGGER.info("[macro.metrics.robustness] autoAttackResume repath=false step={}", currentStepIndex);
                 }
-            } else {
-                // Still has enemies — attack current target (single target at a time)
-                tickAttack(player, world, client);
-                return; // Don't execute state machine while eliminating
             }
-        }
+            if (pausedForAutoAttack) {
+                return; // Suspend state machine while entity is being attacked
+            }
 
-        // Entity attack — active during any running state
-        if (currentMacro.getConfig().isAttackEnabled()) {
-            tickAttack(player, world, client);
-        }
+            boolean isDuringMacro = state != MacroState.IDLE && state != MacroState.COMPLETED && state != MacroState.ERROR;
+            if (isDuringMacro && currentMacro.getConfig().isAttackDanger()) {
+                boolean hasEnemiesNearby = hasEntitiesInRange(player, world, currentMacro.getConfig());
+                if (hasEnemiesNearby && !isEliminatingEnemies) {
+                    isEliminatingEnemies = true;
+                    eliminationModeCount++;
+                    eliminationModeStartMs = System.currentTimeMillis();
+                    LOGGER.info("[macro.metrics.robustness] eliminationStart fromState={} step={}",
+                        state, currentStepIndex);
+                    // Do NOT release inputs or clear path — keep moving while fighting
+                    attackTarget = null;
+                    attackChaseStartMs = -1L;
+                }
+            }
 
-        switch (state) {
-            case PRECOMPUTING -> tickPrecomputing(player, world);
-            case PATHFINDING  -> tickPathfinding(player, world);
-            case MOVING       -> tickMoving(player, world);
-            case MINING       -> tickMining(player, world, client);
-            case LINE_FARMING -> tickLineFarming(player, world, client);
-            case NEXT_STEP    -> tickNextStep();
-            default -> { }
+            if (isEliminatingEnemies) {
+                boolean stillHasEnemies = hasEntitiesInRange(player, world, currentMacro.getConfig());
+                if (!stillHasEnemies) {
+                    isEliminatingEnemies = false;
+                    long eliminationDurationMs = 0L;
+                    if (eliminationModeStartMs >= 0) {
+                        eliminationDurationMs = System.currentTimeMillis() - eliminationModeStartMs;
+                        eliminationModeTotalMs += eliminationDurationMs;
+                        eliminationModeStartMs = -1L;
+                    }
+                    attackTarget = null;
+                    attackChaseStartMs = -1L;
+                    stuckSince  = -1L;
+                    lastPosition = new Vec3d(player.getX(), player.getY(), player.getZ());
+                    // Resume movement with existing path if available — no repath needed
+                    if (currentPath != null && currentPathIndex < currentPath.size()) {
+                        LOGGER.info("[macro.metrics.robustness] eliminationEnd step={} durationMs={} repath=false resumePath",
+                            currentStepIndex, eliminationDurationMs);
+                        // Keep state as MOVING — seamless resume
+                        if (state != MacroState.MOVING) {
+                            moveStartMs = System.currentTimeMillis();
+                            state = MacroState.MOVING;
+                        }
+                    } else {
+                        LOGGER.info("[macro.metrics.robustness] eliminationEnd step={} durationMs={} repath=true from={}",
+                            currentStepIndex, eliminationDurationMs, player.getBlockPos());
+                        currentPath = null;
+                        currentPathIndex = 0;
+                        moveStartMs = System.currentTimeMillis();
+                        state = MacroState.PATHFINDING;
+                        repathCount++;
+                    }
+                } else {
+                    tickAttack(player, world, client);
+                    return;
+                }
+            }
+
+            if (currentMacro.getConfig().isAttackEnabled()) {
+                tickAttack(player, world, client);
+            }
+
+            switch (state) {
+                case PRECOMPUTING -> tickPrecomputing(player, world);
+                case PATHFINDING  -> tickPathfinding(player, world);
+                case MOVING       -> tickMoving(player, world);
+                case MINING       -> tickMining(player, world, client);
+                case LINE_FARMING -> tickLineFarming(player, world, client);
+                case NEXT_STEP    -> tickNextStep();
+                default -> { }
+            }
+        } finally {
+            long tickNs = System.nanoTime() - tickStartNs;
+            tickCount++;
+            tickTotalNs += tickNs;
+            if (tickNs > tickMaxNs) {
+                tickMaxNs = tickNs;
+            }
+            maybeLogMetricsSnapshot();
         }
     }
 
@@ -540,32 +591,18 @@ public class MacroExecutor {
     // ═══════════════════════════════════════════════════════════════
 
     /**
-     * Pre-computation phase: submits each step's path computation to a background thread.
-     * Polls for completion each tick without blocking the main thread.
-     * Transitions to PATHFINDING when all paths are ready or first step is ready.
+     * Pre-computation phase: computes one step path per tick, storing results in
+     * {@code precomputedPaths}. Transitions to PATHFINDING when all paths are ready.
      */
     private void tickPrecomputing(ClientPlayerEntity player, ClientWorld world) {
-        // All steps submitted and finished — transition
-        if (precomputeIndex >= currentMacro.getSteps().size() && !precomputeBusy) {
-            LOGGER.info("Path pre-computation done ({} steps)", currentMacro.getSteps().size());
-            state = MacroState.PATHFINDING;
-            return;
-        }
-
-        // Background thread still running — wait
-        if (precomputeBusy) {
-            // If the first step path is already available, start navigating immediately
-            // while remaining steps compute in the background
-            if (precomputedPaths.get(0) != null) {
-                LOGGER.info("First path ready, starting navigation while computing remaining steps");
-                state = MacroState.PATHFINDING;
-            }
-            return;
-        }
-
-        // All submitted — done
         if (precomputeIndex >= currentMacro.getSteps().size()) {
-            LOGGER.info("Path pre-computation done ({} steps)", currentMacro.getSteps().size());
+            LOGGER.info("[macro.metrics.path] precomputeDone steps={} success={}/{} avgMs={} maxMs={} avgNodes={}",
+                currentMacro.getSteps().size(),
+                precomputedPathSuccess,
+                precomputedPathQueries,
+                precomputedPathQueries > 0 ? (precomputedPathTotalNs / 1_000_000.0) / precomputedPathQueries : 0.0,
+                precomputedPathMaxNs / 1_000_000.0,
+                precomputedPathSuccess > 0 ? (double) precomputedPathNodesTotal / precomputedPathSuccess : 0.0);
             state = MacroState.PATHFINDING;
             return;
         }
@@ -575,52 +612,27 @@ public class MacroExecutor {
         BlockPos from  = precomputeFromPos != null ? precomputeFromPos : player.getBlockPos();
 
         if (!BlockUtils.isChunkLoaded(world, goal)) {
-            LOGGER.info("Pre-compute skip step {} (chunk not loaded)", precomputeIndex);
-            precomputeFromPos = goal;
-            precomputeIndex++;
-            return;
+            // Cannot path to unloaded chunk yet — leave as null, live fallback will handle it
+            LOGGER.info("[macro.metrics.path] precomputeSkip step={} reason=chunk_not_loaded goal={}",
+                precomputeIndex, goal);
+        } else {
+            List<BlockPos> path = findPathWithMetrics(from, goal, world, 500L, true, precomputeIndex);
+            precomputedPaths.set(precomputeIndex, path);
         }
 
-        // Submit path computation to background thread
-        final int stepIdx = precomputeIndex;
-        final BlockPos fromFinal = from;
-        final BlockPos goalFinal = goal;
-        final boolean onlyGround = currentMacro.getConfig().isOnlyGround();
-        final int maxNodes = MacroModClient.getConfigManager().getConfig().getMaxPathNodes();
-        precomputeBusy = true;
-
-        pathfindingExecutor.submit(() -> {
-            try {
-                List<BlockPos> path = null;
-                PathHandler pathHandler = MacroModClient.getPathHandler();
-                if (pathHandler != null) {
-                    List<BaseBlockPos> sp = pathHandler.findPath(
-                        new BaseBlockPos(fromFinal.getX(), fromFinal.getY(), fromFinal.getZ()),
-                        new ExactGoal(new BaseBlockPos(goalFinal.getX(), goalFinal.getY(), goalFinal.getZ())),
-                        500L
-                    );
-                    path = toBlockPosPath(sp);
-                }
-                if (path == null || path.isEmpty()) {
-                    PathFinder bgPathFinder = new PathFinder();
-                    bgPathFinder.setOnlyGround(onlyGround);
-                    bgPathFinder.setMaxNodes(maxNodes);
-                    path = bgPathFinder.findPath(fromFinal, goalFinal, world);
-                }
-                if (precomputedPaths != null && stepIdx < precomputedPaths.size()) {
-                    precomputedPaths.set(stepIdx, path);
-                }
-                LOGGER.info("Pre-computed path for step {}: {} nodes", stepIdx,
-                        path != null ? path.size() : 0);
-            } catch (Exception e) {
-                LOGGER.error("Background path computation failed for step {}", stepIdx, e);
-            } finally {
-                precomputeBusy = false;
-            }
-        });
-
-        precomputeFromPos = goal;
+        precomputeFromPos = goal; // next path starts from this step's destination
         precomputeIndex++;
+
+        if (precomputeIndex >= currentMacro.getSteps().size()) {
+            LOGGER.info("[macro.metrics.path] precomputeDone steps={} success={}/{} avgMs={} maxMs={} avgNodes={}",
+                currentMacro.getSteps().size(),
+                precomputedPathSuccess,
+                precomputedPathQueries,
+                precomputedPathQueries > 0 ? (precomputedPathTotalNs / 1_000_000.0) / precomputedPathQueries : 0.0,
+                precomputedPathMaxNs / 1_000_000.0,
+                precomputedPathSuccess > 0 ? (double) precomputedPathNodesTotal / precomputedPathSuccess : 0.0);
+            state = MacroState.PATHFINDING;
+        }
     }
 
     private void tickPathfinding(ClientPlayerEntity player, ClientWorld world) {
@@ -629,29 +641,25 @@ public class MacroExecutor {
             state = MacroState.COMPLETED;
             return;
         }
-        movementHelper.applyMacroConfig(currentMacro.getConfig());
 
         BlockPos goal = step.getDestination();
 
-        // Already at destination? Require the player to be centered before mining.
+        // Already at destination? Skip mining for nav-only steps, go straight to next step.
         if (PlayerUtils.isArrived(player, goal, currentMacro.getConfig().getArrivalRadius())) {
-            double cdx = player.getX() - (goal.getX() + 0.5);
-            double cdz = player.getZ() - (goal.getZ() + 0.5);
-            double centerDist = Math.sqrt(cdx * cdx + cdz * cdz);
             if (!isCenteredOnBlock(player, goal)) {
-                long now = System.currentTimeMillis();
-                if (now - lastDebugMs > DEBUG_INTERVAL_MS) {
-                    lastDebugMs = now;
-                    LOGGER.info("[DBG] PATHFINDING->centering: dist={} threshold=0.40 pos=({},{}) dest=({},{})",
-                        String.format("%.3f", centerDist),
-                        String.format("%.2f", player.getX()), String.format("%.2f", player.getZ()),
-                        goal.getX(), goal.getZ());
-                }
                 movementHelper.moveTowards(player, goal);
                 player.setSprinting(false);
                 return;
             }
-            LOGGER.info("[DBG] PATHFINDING->MINING: centered dist={}", String.format("%.3f", centerDist));
+            // Nav-only step (no targets to mine) → advance immediately, no input release
+            if (step.getTargets().isEmpty() && step.getRadius() <= 0) {
+                advanceToNextStep();
+                // Flow through: if advanceToNextStep set us to PATHFINDING, run it now
+                if (state == MacroState.PATHFINDING) {
+                    tickPathfinding(player, world);
+                }
+                return;
+            }
             movementHelper.releaseAllInputs();
             state = MacroState.MINING;
             currentBlockTargetIndex = 0;
@@ -668,32 +676,30 @@ public class MacroExecutor {
             if (!BlockUtils.isChunkLoaded(world, goal)) {
                 if (chunkWaitStartMs < 0) {
                     chunkWaitStartMs = System.currentTimeMillis();
+                    chunkWaitEvents++;
                     sendMessage("macromod.chat.chunk_not_loaded", Formatting.YELLOW);
+                    LOGGER.info("[macro.metrics.robustness] chunkWaitStart step={} goal={}", currentStepIndex, goal);
                 } else if (System.currentTimeMillis() - chunkWaitStartMs > 5000) {
-                    LOGGER.warn("Chunk not loaded after 5s, skipping step");
+                    chunkWaitTimeoutSkips++;
+                    chunkWaitTotalMs += System.currentTimeMillis() - chunkWaitStartMs;
+                    LOGGER.info("[macro.metrics.robustness] chunkWaitTimeout step={} waitedMs={} goal={} action=skip",
+                        currentStepIndex, System.currentTimeMillis() - chunkWaitStartMs, goal);
                     sendMessage("macromod.chat.path_not_found", Formatting.RED);
+                    chunkWaitStartMs = -1L;
                     advanceToNextStep();
                 }
                 return;
             }
+            if (chunkWaitStartMs >= 0) {
+                chunkWaitTotalMs += System.currentTimeMillis() - chunkWaitStartMs;
+            }
             chunkWaitStartMs = -1L;
 
-            PathHandler pathHandler = MacroModClient.getPathHandler();
-            if (pathHandler != null) {
-                long timeoutMs = 3000L; // 3s pathfinding calculation cap
-                List<BaseBlockPos> sp = pathHandler.findPath(
-                    new BaseBlockPos(player.getBlockPos().getX(), player.getBlockPos().getY(), player.getBlockPos().getZ()),
-                    new ExactGoal(new BaseBlockPos(goal.getX(), goal.getY(), goal.getZ())),
-                    timeoutMs
-                );
-                path = toBlockPosPath(sp);
-            }
+            long timeoutMs = Math.max(1000L, currentMacro.getConfig().getMoveTimeout());
+            path = findPathWithMetrics(player.getBlockPos(), goal, world, timeoutMs, false, currentStepIndex);
             if (path == null || path.isEmpty()) {
-                fallbackPathFinder.setOnlyGround(currentMacro.getConfig().isOnlyGround());
-                path = fallbackPathFinder.findPath(player.getBlockPos(), goal, world);
-            }
-            if (path == null || path.isEmpty()) {
-                LOGGER.warn("No path to step {} destination {}", currentStepIndex, goal);
+                LOGGER.info("[macro.metrics.robustness] pathNotFound step={} goal={} action=skip",
+                    currentStepIndex, goal);
                 sendMessage("macromod.chat.path_not_found", Formatting.RED);
                 advanceToNextStep();
                 return;
@@ -710,8 +716,9 @@ public class MacroExecutor {
         stuckSince = -1L;
         lastPosition = new Vec3d(player.getX(), player.getY(), player.getZ());
         movementHelper.resetJumpState();
-        movementHelper.resetSteeringState();
         state = MacroState.MOVING;
+        // Flow through: start moving in the same tick to avoid 1-tick dead zone
+        tickMoving(player, world);
     }
 
     private void tickMoving(ClientPlayerEntity player, ClientWorld world) {
@@ -722,28 +729,20 @@ public class MacroExecutor {
         }
 
         float arrivalRadius = currentMacro.getConfig().getArrivalRadius();
-        movementHelper.applyMacroConfig(currentMacro.getConfig());
 
-        // Check if we've arrived at the final destination (require centering first)
+        // Check if we've arrived at the final destination
         if (PlayerUtils.isArrived(player, step.getDestination(), arrivalRadius)) {
             BlockPos dest = step.getDestination();
-            double cdx = player.getX() - (dest.getX() + 0.5);
-            double cdz = player.getZ() - (dest.getZ() + 0.5);
-            double centerDist = Math.sqrt(cdx * cdx + cdz * cdz);
+            // Nav-only step → advance immediately, keep momentum
+            if (step.getTargets().isEmpty() && step.getRadius() <= 0) {
+                advanceToNextStep();
+                return;
+            }
             if (!isCenteredOnBlock(player, dest)) {
-                long now = System.currentTimeMillis();
-                if (now - lastDebugMs > DEBUG_INTERVAL_MS) {
-                    lastDebugMs = now;
-                    LOGGER.info("[DBG] MOVING->centering: dist={} threshold=0.40 pos=({},{}) dest=({},{})",
-                        String.format("%.3f", centerDist),
-                        String.format("%.2f", player.getX()), String.format("%.2f", player.getZ()),
-                        dest.getX(), dest.getZ());
-                }
                 movementHelper.moveTowards(player, dest);
                 player.setSprinting(false);
                 return;
             }
-            LOGGER.info("[DBG] MOVING->MINING (isArrived): centered dist={}", String.format("%.3f", centerDist));
             movementHelper.releaseAllInputs();
             state = MacroState.MINING;
             currentBlockTargetIndex = 0;
@@ -754,40 +753,22 @@ public class MacroExecutor {
         // Timeout check per tick for movement only (not mining) to prevent getting stuck indefinitely
         long elapsedMove = System.currentTimeMillis() - moveStartMs;
         if (elapsedMove > 60000) {
-            LOGGER.warn("Navigation timeout at step {} (elapsed={}ms moveStartMs={})",
-                currentStepIndex, elapsedMove, moveStartMs);
+            navigationTimeouts++;
+            LOGGER.info("[macro.metrics.robustness] navigationTimeout step={} elapsedMs={} pathIdx={}/{}",
+                currentStepIndex, elapsedMove, currentPathIndex,
+                currentPath != null ? currentPath.size() : 0);
             sendMessage("macromod.chat.timeout", Formatting.RED);
             movementHelper.releaseAllInputs();
             state = MacroState.ERROR;
             return;
         }
-        
-        // Periodic debug: position, distance to dest, elapsed time
-        {
-            long now = System.currentTimeMillis();
-            if (now - lastDebugMs > DEBUG_INTERVAL_MS) {
-                lastDebugMs = now;
-                BlockPos dest = step.getDestination();
-                double ddx = player.getX() - (dest.getX() + 0.5);
-                double ddz = player.getZ() - (dest.getZ() + 0.5);
-                double toDest = Math.sqrt(ddx * ddx + ddz * ddz);
-                LOGGER.info("[DBG] MOVING step={} pathIdx={}/{} pos=({},{}) destDist={} elapsed={}ms",
-                    currentStepIndex,
-                    currentPathIndex, currentPath != null ? currentPath.size() : 0,
-                    String.format("%.2f", player.getX()), String.format("%.2f", player.getZ()),
-                    String.format("%.2f", toDest), elapsedMove);
-                LOGGER.info("[DBG] STEER yawDelta={} desiredSpeed={} currentSpeed={}",
-                    String.format("%.1f", movementHelper.getLastYawDelta()),
-                    String.format("%.3f", movementHelper.getLastDesiredSpeed()),
-                    String.format("%.3f", movementHelper.getLastCurrentSpeed()));
-            }
-        }
 
-        // Stuck detection (no movement in 3 seconds)
+        // Stuck detection — only repath after 5s of no progress.
+        // The first 0-2s are handled by MovementHelper's strafe dislodge.
+        // No releaseAllInputs here — keep moving while repathing.
         if (lastPosition != null) {
             double moved = PlayerUtils.horizontalDistanceTo(player, lastPosition);
-            double steeringSpeed = movementHelper.getLastCurrentSpeed();
-            if (moved < MOVING_MIN_PROGRESS && steeringSpeed < 0.08) {
+            if (moved < 0.5) {
                 if (stuckSince < 0) stuckSince = System.currentTimeMillis();
             } else {
                 stuckSince = -1L;
@@ -795,25 +776,16 @@ public class MacroExecutor {
             }
         }
 
-        if (stuckSince >= 0 && System.currentTimeMillis() - stuckSince > MOVING_STUCK_TIMEOUT_MS) {
-            LOGGER.warn("Player stuck, attempting snap then recalculating path");
-            sendMessage("macromod.chat.stuck", Formatting.YELLOW);
+        if (stuckSince >= 0 && System.currentTimeMillis() - stuckSince > 5000) {
+            stuckRecoveries++;
+            repathCount++;
+            LOGGER.info("[macro.metrics.robustness] movementStuck step={} stuckMs={} action=repath",
+                currentStepIndex, System.currentTimeMillis() - stuckSince);
             stuckSince = -1L;
-
-            // Try snapping forward on the existing path before full repath
-            int snapIdx = snapToPath(player, currentPath);
-            if (snapIdx >= 0 && snapIdx > currentPathIndex) {
-                currentPathIndex = snapIdx;
-                lastPosition = new Vec3d(player.getX(), player.getY(), player.getZ());
-                LOGGER.info("Stuck snap: advanced path index to {}", snapIdx);
-            } else {
-                // Clear cached path so it's re-computed from the current (actual) position
-                if (precomputedPaths != null && currentStepIndex < precomputedPaths.size()) {
-                    precomputedPaths.set(currentStepIndex, null);
-                }
-                state = MacroState.PATHFINDING;
-                movementHelper.releaseAllInputs();
+            if (precomputedPaths != null && currentStepIndex < precomputedPaths.size()) {
+                precomputedPaths.set(currentStepIndex, null);
             }
+            state = MacroState.PATHFINDING;
             return;
         }
 
@@ -825,24 +797,34 @@ public class MacroExecutor {
             return;
         }
 
-        // Path already consumed: navigate directly to block center before mining.
-        // MUST be checked before the main path-following block — otherwise on
-        // the second+ centering tick the outer `else { PATHFINDING }` would fire.
+        BlockPos dest = step.getDestination();
+        BlockPos playerBlockPos = player.getBlockPos();
+
+        // ── DIRECT MOVEMENT: if destination is walkably visible, skip entire path ──
+        if (BlockUtils.hasWalkableLOS(world, playerBlockPos, dest)) {
+            movementHelper.handleStuckRecovery(player);
+            movementHelper.moveTowards(player, dest);
+            // Advance path index to end so we don't revert to path-following next tick
+            if (currentPath != null) currentPathIndex = currentPath.size();
+            return;
+        }
+
+        // Path already consumed: navigate directly to destination.
         if (currentPath != null && currentPathIndex >= currentPath.size()) {
-            BlockPos dest = step.getDestination();
-            if (!isCenteredOnBlock(player, dest)) {
-                double cdx3 = player.getX() - (dest.getX() + 0.5);
-                double cdz3 = player.getZ() - (dest.getZ() + 0.5);
-                long now = System.currentTimeMillis();
-                if (now - lastDebugMs > DEBUG_INTERVAL_MS) {
-                    lastDebugMs = now;
-                    LOGGER.info("[DBG] centering dist={}", String.format("%.3f", Math.sqrt(cdx3*cdx3+cdz3*cdz3)));
+            // Nav-only step → advance immediately, keep momentum
+            if (step.getTargets().isEmpty() && step.getRadius() <= 0) {
+                if (PlayerUtils.isArrived(player, dest, arrivalRadius)) {
+                    advanceToNextStep();
+                    return;
                 }
+                movementHelper.moveTowards(player, dest);
+                return;
+            }
+            if (!isCenteredOnBlock(player, dest)) {
                 movementHelper.moveTowards(player, dest);
                 player.setSprinting(false);
                 return;
             }
-            LOGGER.info("[DBG] centered -> MINING");
             movementHelper.releaseAllInputs();
             state = MacroState.MINING;
             currentBlockTargetIndex = 0;
@@ -850,86 +832,39 @@ public class MacroExecutor {
             return;
         }
 
-        // ── Pipeline: start computing next step's path while we're still moving ─
-        pipelineNextStepPath(player, world);
-
-        // Follow path — keep forward key held through all waypoints for smooth momentum
+        // ── LOS-BASED TARGET SELECTION: find the farthest visible waypoint ──
         if (currentPath != null && currentPathIndex < currentPath.size()) {
-            BlockPos nextWaypoint = currentPath.get(currentPathIndex);
+            // Scan from end of path backwards to find the farthest node we can walk to directly
+            BlockPos targetWaypoint = currentPath.get(currentPathIndex);
+            int bestIndex = currentPathIndex;
 
-            // Start nodes are frequently at/near the player's current position.
-            // Skip them quickly to avoid slowing/orbiting near the path anchor.
-            while (currentPathIndex < currentPath.size() - 1
-                    && isNearWaypoint(player, currentPath.get(currentPathIndex), 1.2)) {
-                currentPathIndex++;
-                nextWaypoint = currentPath.get(currentPathIndex);
-            }
-
-            // If we're already significantly closer to the next node than the current one,
-            // advance immediately to avoid orbiting a behind-us waypoint.
-            while (currentPathIndex < currentPath.size() - 1
-                    && shouldAdvanceWaypoint(player, currentPath.get(currentPathIndex), currentPath.get(currentPathIndex + 1))) {
-                currentPathIndex++;
-                nextWaypoint = currentPath.get(currentPathIndex);
-            }
-
-            // Advance to next waypoint when player reaches the center of the current one
-            if (movementHelper.hasReachedWaypoint(player, nextWaypoint)) {
-                currentPathIndex++;
-                if (currentPathIndex >= currentPath.size()) {
-                    // End of path — the pre-block centering check handles this next tick
-                    return;
-                }
-                nextWaypoint = currentPath.get(currentPathIndex);
-            }
-
-            // Look-ahead skip: advance the path index when the player is already past
-            // 85% of the current segment — but ONLY for straight sections.
-            // On corners (direction change > ~45°) we skip this so the player
-            // centres on the turn block before changing heading, preventing edge clipping.
-            while (currentPathIndex < currentPath.size() - 1) {
-                Vec3d currCenter = net.minecraft.util.math.Vec3d.ofCenter(currentPath.get(currentPathIndex));
-                Vec3d nextCenter = net.minecraft.util.math.Vec3d.ofCenter(currentPath.get(currentPathIndex + 1));
-                Vec3d seg        = nextCenter.subtract(currCenter);
-                Vec3d toPlayer   = new Vec3d(player.getX(), player.getY(), player.getZ()).subtract(currCenter);
-                double dot       = seg.dotProduct(toPlayer);
-                double segLenSq  = seg.dotProduct(seg);
-
-                // Corner-ahead check: is there a significant direction change at nextCenter?
-                boolean cornerAhead = false;
-                if (currentPathIndex + 2 < currentPath.size()) {
-                    Vec3d afterNext = net.minecraft.util.math.Vec3d.ofCenter(
-                            currentPath.get(currentPathIndex + 2));
-                    Vec3d segNext = afterNext.subtract(nextCenter);
-                    double segLen   = Math.sqrt(segLenSq);
-                    double nextLen  = segNext.length();
-                    if (segLen > 0.001 && nextLen > 0.001) {
-                        double dirDot = seg.dotProduct(segNext) / (segLen * nextLen);
-                        cornerAhead = dirDot < 0.70; // > ~45° change → treat as corner
-                    }
-                }
-
-                // On corners, let hasReachedWaypoint handle advancement so the
-                // player is truly centred before the heading changes.
-                if (cornerAhead) break;
-
-                if (dot > segLenSq * 0.85) {   // 85% through straight segment = skip
-                    currentPathIndex++;
-                    nextWaypoint = currentPath.get(currentPathIndex);
-                } else {
+            for (int i = currentPath.size() - 1; i > currentPathIndex; i--) {
+                BlockPos candidate = currentPath.get(i);
+                if (BlockUtils.hasWalkableLOS(world, playerBlockPos, candidate)) {
+                    targetWaypoint = candidate;
+                    bestIndex = i;
                     break;
                 }
             }
 
-            // Jump over 1-block obstacles and handle horizontal stalls
-            movementHelper.handleJump(player, nextWaypoint);
-            // Steer toward a lookahead point so corners are cut naturally.
-            Vec3d smoothedTarget = getSmoothedTarget(currentPath, currentPathIndex, player);
-            movementHelper.moveTowards(player, smoothedTarget);
+            // Advance path index to the farthest visible node
+            currentPathIndex = bestIndex;
+
+            // Also advance past any waypoints we've already reached
+            while (currentPathIndex < currentPath.size() - 1
+                    && movementHelper.hasReachedWaypoint(player, currentPath.get(currentPathIndex))) {
+                currentPathIndex++;
+                targetWaypoint = currentPath.get(currentPathIndex);
+            }
+
+            // Strafe recovery for stuck situations; jumping handled by vanilla autojump
+            movementHelper.handleStuckRecovery(player);
+            // Smoothly steer and hold forward — no key release between waypoints
+            movementHelper.moveTowards(player, targetWaypoint);
         } else {
-            // Path ended but we're not at the destination — recalculate
-            movementHelper.releaseAllInputs();
+            // No path — recalculate (keep moving, don't release inputs)
             state = MacroState.PATHFINDING;
+            repathCount++;
         }
     }
 
@@ -939,10 +874,11 @@ public class MacroExecutor {
             advanceToNextStep();
             return;
         }
-        movementHelper.applyMacroConfig(currentMacro.getConfig());
+
+        boolean onlyDefinedTargets = currentMacro.getConfig().isMineOnlyDefinedTargets();
 
         // ── Radius scan: on first entry for this step, find matching blocks nearby ───
-        if (!radiusScanDone) {
+        if (!radiusScanDone && !onlyDefinedTargets) {
             radiusScanDone = true;
             if (!step.getTargets().isEmpty()) {
                 scanRadiusTargets(step, world, player);
@@ -950,7 +886,7 @@ public class MacroExecutor {
         }
 
         // ── Dynamic rescan: if player has moved >2 blocks since last scan, re-scan ──
-        if (lastScanPlayerPos != null && !step.getTargets().isEmpty()) {
+        if (!onlyDefinedTargets && lastScanPlayerPos != null && !step.getTargets().isEmpty()) {
             BlockPos pp = player.getBlockPos();
             int dx = pp.getX() - lastScanPlayerPos.getX();
             int dy = pp.getY() - lastScanPlayerPos.getY();
@@ -1002,6 +938,17 @@ public class MacroExecutor {
         Vec3d eyePos = player.getEyePos();
         BlockPos blockPos = target.getPos();
 
+        // Target lock: never switch focus while the current target is in progress.
+        if (activeMiningTarget == null || !activeMiningTarget.equals(blockPos)) {
+            activeMiningTarget = blockPos;
+            isMiningBlock = false;
+            aimLocked = false;
+            aimLockedAtMs = -1L;
+            noLOSBlock = null;
+            noLOSStartMs = -1L;
+            if (client.options != null) client.options.attackKey.setPressed(false);
+        }
+
         // Block verification
         String actualBlockId = BlockUtils.getBlockId(world, blockPos);
 
@@ -1010,21 +957,32 @@ public class MacroExecutor {
             target.setMined(true);
             blocksMinedTotal++;
             currentBlockTargetIndex++;
+            activeMiningTarget = null;
             isMiningBlock = false;
             aimLocked = false;
             aimLockedAtMs = -1L;
+            noLOSBlock = null;
+            noLOSStartMs = -1L;
+            if (client.options != null) client.options.attackKey.setPressed(false);
             miningDelayEndMs = System.currentTimeMillis() + HumanReactionTime.getMiningReactionTime(currentMacro.getConfig().getMiningDelay());
             return;
         }
 
         // Check block type match — always skip if block changed
         if (!actualBlockId.equals(target.getBlockId())) {
+            miningSkipBlockChanged++;
             target.setSkipped(true);
             blocksSkippedTotal++;
             currentBlockTargetIndex++;
+            activeMiningTarget = null;
             isMiningBlock = false;
             aimLocked = false;
             aimLockedAtMs = -1L;
+            noLOSBlock = null;
+            noLOSStartMs = -1L;
+            if (client.options != null) client.options.attackKey.setPressed(false);
+            LOGGER.info("[macro.metrics.robustness] mineSkip reason=block_changed step={} block={} expected={} actual={}",
+                currentStepIndex, blockPos, target.getBlockId(), actualBlockId);
             return;
         }
 
@@ -1035,146 +993,148 @@ public class MacroExecutor {
                 int currentAge = blockState.get(intProp);
                 int maxAge = intProp.getValues().stream().mapToInt(Integer::intValue).max().orElse(0);
                 if (currentAge < maxAge) {
-                    LOGGER.debug("[DBG] mine SKIP unripe: block={} age={}/{}", blockPos, currentAge, maxAge);
+                    miningSkipUnripe++;
                     target.setSkipped(true);
                     blocksSkippedTotal++;
                     currentBlockTargetIndex++;
+                    activeMiningTarget = null;
                     isMiningBlock = false;
+                    aimLocked = false;
+                    aimLockedAtMs = -1L;
+                    noLOSBlock = null;
+                    noLOSStartMs = -1L;
+                    if (client.options != null) client.options.attackKey.setPressed(false);
+                    LOGGER.info("[macro.metrics.robustness] mineSkip reason=unripe step={} block={} age={}/{}",
+                        currentStepIndex, blockPos, currentAge, maxAge);
                     return;
                 }
                 break;
             }
         }
 
-        // 3D sphere range check: permanently skip blocks truly out of approach range
+        // Hard range gate: permanently skip blocks truly too far to ever reach.
         Vec3d blockCenter3d = Vec3d.ofCenter(blockPos);
-        double distSq = eyePos.squaredDistanceTo(blockCenter3d);
-        if (distSq > 6.0 * 6.0) {
-            LOGGER.info("[DBG] mine SKIP range 3D: block={} dist={}", blockPos,
-                String.format("%.2f", Math.sqrt(distSq)));
+        if (eyePos.squaredDistanceTo(blockCenter3d) > 6.0 * 6.0) {
+            miningSkipRange++;
             target.setSkipped(true);
             blocksSkippedTotal++;
             currentBlockTargetIndex++;
+            activeMiningTarget = null;
             isMiningBlock = false;
+            aimLocked = false;
+            aimLockedAtMs = -1L;
+            noLOSBlock = null;
+            noLOSStartMs = -1L;
+            if (client.options != null) client.options.attackKey.setPressed(false);
+            LOGGER.info("[macro.metrics.robustness] mineSkip reason=out_of_range step={} block={} dist={}",
+                currentStepIndex, blockPos, Math.sqrt(eyePos.squaredDistanceTo(blockCenter3d)));
             return;
         }
 
-        // Aim at the visible face center (unless aim is already locked on target)
-        Vec3d blockCenter = visibleFaceCentre(eyePos, blockPos, player.getBlockPos().getY(), world);
-        if (!aimLocked) {
-            movementHelper.lookAt(player, blockCenter, 0.10f);
-        }
+        // Robust visibility: find an actually visible surface point via multi-point voxel raycasts.
+        Vec3d visiblePoint = visibleFaceCentre(eyePos, blockPos, player.getBlockPos().getY(), world, player);
+        if (visiblePoint == null) {
+            // If mining has already started, keep holding attack to avoid breaking-cycle interruptions.
+            if (isMiningBlock) {
+                if (client.options != null) client.options.attackKey.setPressed(true);
+                MouseInputHelper.continueLeftClick(client);
 
-        // Check if the aim point on the block is actually visible (raycast to the face point)
-        net.minecraft.world.RaycastContext losCtx = new net.minecraft.world.RaycastContext(
-                eyePos, blockCenter,
-                net.minecraft.world.RaycastContext.ShapeType.COLLIDER,
-                net.minecraft.world.RaycastContext.FluidHandling.NONE,
-                (net.minecraft.entity.Entity) player);
-        net.minecraft.util.hit.BlockHitResult losResult = world.raycast(losCtx);
-        boolean canSee = losResult.getBlockPos().equals(blockPos);
+                if (BlockUtils.isAir(world, blockPos)) {
+                    target.setMined(true);
+                    blocksMinedTotal++;
+                    activeMiningTarget = null;
+                    isMiningBlock = false;
+                    aimLocked = false;
+                    aimLockedAtMs = -1L;
+                    noLOSBlock = null;
+                    noLOSStartMs = -1L;
+                    if (client.options != null) client.options.attackKey.setPressed(false);
+                    miningDelayEndMs = System.currentTimeMillis() + HumanReactionTime.getMiningReactionTime(currentMacro.getConfig().getMiningDelay());
+                    scanRadiusTargets(step, world, player);
+                    currentBlockTargetIndex++;
+                    return;
+                }
 
-        // If not visible, try to reposition closer before giving up.
-        if (!canSee) {
-            double hDist = Math.sqrt(
-                Math.pow(blockPos.getX() + 0.5 - player.getX(), 2) +
-                Math.pow(blockPos.getZ() + 0.5 - player.getZ(), 2));
-            if (hDist > 1.5) {
-                LOGGER.info("[DBG] mine NO_LOS reposition: block={} hDist={}",
-                    blockPos, String.format("%.2f", hDist));
-                noLOSBlock = null; // reset strafe when we're still far
-                movementHelper.forwardToBlock(player, blockPos);
+                if (System.currentTimeMillis() - lastMineTime > MINING_TIMEOUT_MS) {
+                    miningSkipTimeout++;
+                    if (client.options != null) client.options.attackKey.setPressed(false);
+                    target.setSkipped(true);
+                    blocksSkippedTotal++;
+                    currentBlockTargetIndex++;
+                    activeMiningTarget = null;
+                    isMiningBlock = false;
+                    aimLocked = false;
+                    aimLockedAtMs = -1L;
+                    noLOSBlock = null;
+                    noLOSStartMs = -1L;
+                    LOGGER.info("[macro.metrics.robustness] mineSkip reason=mining_timeout step={} block={} elapsedMs={}",
+                        currentStepIndex, blockPos, System.currentTimeMillis() - lastMineTime);
+                }
                 return;
             }
 
-            // Close but occluded — strafe perpendicular to the block direction
-            // to peek around the obstructing geometry.
             long now = System.currentTimeMillis();
             if (noLOSBlock == null || !noLOSBlock.equals(blockPos)) {
                 noLOSBlock = blockPos;
                 noLOSStartMs = now;
-                noLOSStrafeLeft = true;
             }
-
-            long elapsed = now - noLOSStartMs;
-            if (elapsed > STRAFE_GIVE_UP_MS) {
-                LOGGER.info("[DBG] mine NO_LOS give-up: block={}", blockPos);
-                noLOSBlock = null;
+            if (now - noLOSStartMs > STRAFE_GIVE_UP_MS) {
+                long elapsedNoLos = now - noLOSStartMs;
+                miningSkipNoLos++;
                 target.setSkipped(true);
                 blocksSkippedTotal++;
                 currentBlockTargetIndex++;
+                activeMiningTarget = null;
                 isMiningBlock = false;
-                return;
+                aimLocked = false;
+                aimLockedAtMs = -1L;
+                noLOSBlock = null;
+                noLOSStartMs = -1L;
+                if (client.options != null) client.options.attackKey.setPressed(false);
+                LOGGER.info("[macro.metrics.robustness] mineSkip reason=not_visible step={} block={} elapsedMs={}",
+                    currentStepIndex, blockPos, elapsedNoLos);
             }
-
-            // Direction from player toward block (XZ), normalized
-            double toBx = blockPos.getX() + 0.5 - player.getX();
-            double toBz = blockPos.getZ() + 0.5 - player.getZ();
-            double toLen = Math.sqrt(toBx * toBx + toBz * toBz);
-            if (toLen > 0.001) { toBx /= toLen; toBz /= toLen; }
-
-            // Perpendicular: left = (-toBz, toBx), right = (toBz, -toBx)
-            boolean strafeLeft = elapsed < STRAFE_SWITCH_MS ? noLOSStrafeLeft : !noLOSStrafeLeft;
-            double sx = strafeLeft ? -toBz :  toBz;
-            double sz = strafeLeft ?  toBx : -toBx;
-
-            // Move 1 block in the strafe direction
-            BlockPos strafeTarget = BlockPos.ofFloored(
-                player.getX() + sx, player.getY(), player.getZ() + sz);
-            LOGGER.info("[DBG] mine NO_LOS strafe {}: block={} elapsed={}ms",
-                strafeLeft ? "LEFT" : "RIGHT", blockPos, elapsed);
-            movementHelper.moveTowards(player, strafeTarget);
             return;
         }
-        // Regained LOS — reset strafe state
         noLOSBlock = null;
+        noLOSStartMs = -1L;
 
-        // Move forward if not within reach — keep left click held so Minecraft
-        // starts breaking as soon as the crosshair lands on the block face.
+        // Reach check against block AABB (not just center) to avoid false negatives on edge hits.
         double reachDist = player.getBlockInteractionRange();
-        if (!BlockUtils.isWithinReach(eyePos, blockPos, reachDist)) {
-            LOGGER.info("[DBG] mine OUT_OF_REACH: block={} dist3D={} reach={}", blockPos,
-                String.format("%.2f", Math.sqrt(distSq)), String.format("%.2f", reachDist));
-            movementHelper.forwardToBlock(player, blockPos);
+        if (!isWithinMiningReach(eyePos, blockPos, reachDist)) {
+            if (isMiningBlock) {
+                if (client.options != null) client.options.attackKey.setPressed(true);
+                MouseInputHelper.continueLeftClick(client);
+            }
             return;
         }
-        movementHelper.releaseForward(player);
 
-        // Wait until aligned if not locked
+        // Keep camera stable on the same target; only micro-correct when drift is detected.
+        if (!aimLocked || !movementHelper.isLookingAt(player, visiblePoint, 2.5f)) {
+            movementHelper.lookAt(player, visiblePoint, aimLocked ? 0.06f : 0.10f);
+        }
+
+        // Wait until camera is aligned
         if (!currentMacro.getConfig().isLockCrosshair()) {
-            if (!movementHelper.isLookingAt(player, blockCenter, 6.0f)) {
+            if (!movementHelper.isLookingAt(player, visiblePoint, 6.0f)) {
                 return;
             }
         }
 
-        // Verify crosshair is on target block
-        HitResult crosshair = client.crosshairTarget;
-        if (!(crosshair instanceof BlockHitResult bhr) || !bhr.getBlockPos().equals(blockPos)) {
-            aimLocked = false;  // Crosshair lost — unlock aim to re-adjust
-            aimLockedAtMs = -1L;
-            long now2 = System.currentTimeMillis();
-            if (now2 - lastDebugMs > DEBUG_INTERVAL_MS) {
-                lastDebugMs = now2;
-                String hitInfo = (crosshair instanceof BlockHitResult bhr2)
-                    ? bhr2.getBlockPos().toString() : (crosshair != null ? crosshair.getType().name() : "null");
-                LOGGER.info("[DBG] mine CROSSHAIR_MISS: want={} got={}", blockPos, hitInfo);
-            }
-            return;
-        }
-        // Lock aim now that crosshair is confirmed on target block
+        // Lock aim as soon as we're aligned (don't require crosshairTarget — Hypixel
+        // server-side rendering can make client.crosshairTarget disagree with our raycast)
         if (!aimLocked) {
             aimLocked = true;
-            aimLockedAtMs = System.currentTimeMillis(); // record first lock time for dwell
+            aimLockedAtMs = System.currentTimeMillis();
         }
 
-        // Mine through the normal left-click path once dwell has elapsed.
-        // Also hold the attack key so Minecraft's native breaking loop runs in parallel.
+        // Mine once dwell has elapsed
         boolean dwellPassed = aimLockedAtMs >= 0
                 && System.currentTimeMillis() - aimLockedAtMs >= MINING_CLICK_DWELL_MS;
-        if (dwellPassed) {
-            if (client.options != null) client.options.attackKey.setPressed(true);
-            MouseInputHelper.continueLeftClick(client);
-        }
+        if (!dwellPassed) return;
+
+        if (client.options != null) client.options.attackKey.setPressed(true);
+        MouseInputHelper.continueLeftClick(client);
         if (!isMiningBlock) {
             isMiningBlock = true;
             lastMineTime = System.currentTimeMillis();
@@ -1185,14 +1145,19 @@ public class MacroExecutor {
         if (isMiningBlock && System.currentTimeMillis() - lastMineTime > 200) {
             String currentBlockId = BlockUtils.getBlockId(world, blockPos);
             if (!currentBlockId.equals(target.getBlockId())) {
-                LOGGER.info("[DBG] mine BLOCK_REPLACED: block={} was {} now {}", blockPos,
-                    target.getBlockId(), currentBlockId);
+                miningSkipBlockReplaced++;
                 target.setSkipped(true);
                 blocksSkippedTotal++;
                 currentBlockTargetIndex++;
+                activeMiningTarget = null;
                 isMiningBlock = false;
                 aimLocked = false;
                 aimLockedAtMs = -1L;
+                noLOSBlock = null;
+                noLOSStartMs = -1L;
+                if (client.options != null) client.options.attackKey.setPressed(false);
+                LOGGER.info("[macro.metrics.robustness] mineSkip reason=block_replaced step={} block={} expected={} actual={}",
+                    currentStepIndex, blockPos, target.getBlockId(), currentBlockId);
                 return;
             }
         }
@@ -1202,26 +1167,36 @@ public class MacroExecutor {
         if (BlockUtils.isAir(world, blockPos)) {
             target.setMined(true);
             blocksMinedTotal++;
+            activeMiningTarget = null;
             isMiningBlock = false;
             aimLocked = false;  // Unlock aim for next block
             aimLockedAtMs = -1L;
+            noLOSBlock = null;
+            noLOSStartMs = -1L;
             if (client.options != null) client.options.attackKey.setPressed(false); // release immediately after mining
             miningDelayEndMs = System.currentTimeMillis() + HumanReactionTime.getMiningReactionTime(currentMacro.getConfig().getMiningDelay());
-            scanRadiusTargets(step, world, player); // player-centered rescan for newly exposed blocks
+            if (!currentMacro.getConfig().isMineOnlyDefinedTargets()) {
+                scanRadiusTargets(step, world, player); // player-centered rescan for newly exposed blocks
+            }
             currentBlockTargetIndex++;
             return;
         }
 
-        // Stuck mining timeout (1 second)
-        if (System.currentTimeMillis() - lastMineTime > 1000) {
-            LOGGER.warn("Stuck mining block at {}, skipping", blockPos);
+        // Persistent mining timeout: long enough to finish legitimate breaks with latency.
+        if (System.currentTimeMillis() - lastMineTime > MINING_TIMEOUT_MS) {
+            miningSkipTimeout++;
             if (client.options != null) client.options.attackKey.setPressed(false);
             target.setSkipped(true);
             blocksSkippedTotal++;
             currentBlockTargetIndex++;
+            activeMiningTarget = null;
             isMiningBlock = false;
             aimLocked = false;  // Unlock aim on timeout
             aimLockedAtMs = -1L;
+            noLOSBlock = null;
+            noLOSStartMs = -1L;
+            LOGGER.info("[macro.metrics.robustness] mineSkip reason=mining_timeout step={} block={} elapsedMs={}",
+                currentStepIndex, blockPos, System.currentTimeMillis() - lastMineTime);
         }
     }
 
@@ -1249,8 +1224,9 @@ public class MacroExecutor {
                 }
                 if (!attackHasLOS(client, player, attackTarget)) {
                     if (++attackNoLosTicks >= MACRO_MAX_NO_LOS_TICKS) {
-                        LOGGER.info("[MacroExecutor] tickAttack: lost LOS on {}, finding new target",
-                            attackTarget.getName().getString());
+                        attackLostLosDrops++;
+                        LOGGER.info("[macro.metrics.robustness] attackDrop reason=lost_los target={} step={}",
+                            attackTarget.getName().getString(), currentStepIndex);
                         clearAttackTarget(client);
                         return;
                     }
@@ -1292,7 +1268,6 @@ public class MacroExecutor {
             attackChaseLastPos    = null;
             attackChaseStuckMs    = -1L;
             attackChaseJumped     = false;
-            attackLastJumpMs      = -1L;
             PathHandler pathHandler = MacroModClient.getPathHandler();
             if (pathHandler != null) pathHandler.cancelPath();
         }
@@ -1309,7 +1284,11 @@ public class MacroExecutor {
         double meleeSq  = MACRO_MELEE_REACH * MACRO_MELEE_REACH;
 
         if (distSq > meleeSq) {
-            if (client.options != null) client.options.forwardKey.setPressed(true);
+            // In elimination mode, attack chase is authoritative and must be allowed
+            // even if previous state was MOVING (state tick is suspended while fighting).
+            if (state != MacroState.MOVING || isEliminatingEnemies) {
+                if (client.options != null) client.options.forwardKey.setPressed(true);
+            }
 
             // Stuck detection — track lateral movement progress
             Vec3d curPos = new Vec3d(player.getX(), player.getY(), player.getZ());
@@ -1332,37 +1311,36 @@ public class MacroExecutor {
                     if (attackChaseStuckMs < 0) attackChaseStuckMs = System.currentTimeMillis();
                     long stuckMs = System.currentTimeMillis() - attackChaseStuckMs;
 
-                    if (stuckMs >= 600 && System.currentTimeMillis() - attackLastJumpMs >= 450) {
-                        // Stuck while chasing: jump more aggressively, but with cooldown.
-                        if (client.options != null && player.isOnGround()) {
-                            client.options.jumpKey.setPressed(true);
-                            attackLastJumpMs = System.currentTimeMillis();
-                            attackChaseJumped = true;
-                        }
-                    }
-
-                    if (stuckMs >= 2200) {
-                        // Still stuck after jump attempts — skip this entity and try next.
-                        LOGGER.info("[MacroExecutor] tickAttack: stuck for 2.2s chasing {}, skipping",
-                            attackTarget.getName().getString());
+                    if (stuckMs >= 1200) {
+                        // Still stuck after a jump — skip this entity and try next
+                        attackChaseStuckSkips++;
+                        LOGGER.info("[macro.metrics.robustness] attackDrop reason=chase_stuck target={} stuckMs={}",
+                            attackTarget.getName().getString(), stuckMs);
                         clearAttackTarget(client);
                         return;
+                    } else if (stuckMs >= 700 && !attackChaseJumped) {
+                        // Try jumping once to get unstuck
+                        attackChaseJumpAttempts++;
+                        LOGGER.info("[macro.metrics.robustness] attackChaseJumpAttempt target={}",
+                            attackTarget.getName().getString());
+                        if (client.options != null) client.options.jumpKey.setPressed(true);
+                        attackChaseJumped = true;
                     }
                 }
             }
         } else {
-            // Within melee reach — stop moving and reset stuck state
+            // Within melee reach — only stop chasing if NOT path-following
             attackChaseStuckMs = -1L;
             attackChaseLastPos = null;
-            if (client.options != null) {
+            if ((state != MacroState.MOVING || isEliminatingEnemies) && client.options != null) {
                 client.options.forwardKey.setPressed(false);
                 client.options.backKey.setPressed(false);
                 client.options.leftKey.setPressed(false);
                 client.options.rightKey.setPressed(false);
-                if (attackChaseJumped) {
-                    client.options.jumpKey.setPressed(false);
-                    attackChaseJumped = false;
-                }
+            }
+            if (attackChaseJumped && client.options != null) {
+                client.options.jumpKey.setPressed(false);
+                attackChaseJumped = false;
             }
 
             // ── 5. Attack when aimed + cooldown ready + dwell elapsed + CPS ────
@@ -1501,7 +1479,7 @@ public class MacroExecutor {
 
         BlockPos center = player.getBlockPos();
         Vec3d eyePos = player.getEyePos();
-        int scanRadius = 5; // loop bound — sphere filter keeps actual range to 4.5 blocks
+        int scanRadius = RADIUS_SCAN_RADIUS; // tighter loop bound for lower scan cost
 
         // Collect candidates into a temp list for distance-sorting
         java.util.List<BlockTarget> discovered = new java.util.ArrayList<>();
@@ -1532,8 +1510,8 @@ public class MacroExecutor {
 
         lastScanPlayerPos = center;
         if (!discovered.isEmpty()) {
-            LOGGER.info("Radius scan found {} extra blocks for step {} (player-centered r=4.5)",
-                discovered.size(), currentStepIndex);
+            LOGGER.info("[macro.metrics.robustness] radiusScan step={} discovered={} totalTargets={}",
+                currentStepIndex, discovered.size(), step.getTargets().size());
         }
     }
 
@@ -1542,20 +1520,23 @@ public class MacroExecutor {
     // ═══════════════════════════════════════════════════════════════
 
     /**
-     * Checks if there are any attackable entities within attack range.
+     * Checks if there are any attackable entities within attack range AND with
+     * line-of-sight. Mobs behind walls are completely ignored — they must NOT
+     * block movement or trigger elimination mode.
      */
-    private boolean hasEntitiesInRange(ClientPlayerEntity player, ClientWorld world, MacroConfig cfg, boolean requireLos) {
-        float range = cfg.getAttackRange();
+    private boolean hasEntitiesInRange(ClientPlayerEntity player, ClientWorld world, MacroConfig cfg) {
         MinecraftClient client = MinecraftClient.getInstance();
+        float range = cfg.getAttackRange();
         Box box = player.getBoundingBox().expand(range);
         List<LivingEntity> candidates = world.getEntitiesByClass(
             LivingEntity.class, box, e -> {
                 if (e == player || e.isDead() || e.getHealth() <= 0) return false;
-                if (requireLos && !attackHasLOS(client, player, e)) return false;
                 // Always filter out irrelevant entity types
                 if (e instanceof net.minecraft.entity.player.PlayerEntity) return false;
                 if (e instanceof ArmorStandEntity) return false;
                 if (e.isInvisible()) return false;
+                // CRITICAL: require line-of-sight — ignore mobs behind walls
+                if (!attackHasLOS(client, player, e)) return false;
                 if (cfg.isAttackWhitelistOnly()) {
                     String id = Registries.ENTITY_TYPE.getId(e.getType()).toString();
                     return cfg.getAttackWhitelist().contains(id);
@@ -1578,217 +1559,6 @@ public class MacroExecutor {
         return dx * dx + dz * dz < 0.40 * 0.40;
     }
 
-    private static boolean isNearWaypoint(ClientPlayerEntity player, BlockPos waypoint, double radius) {
-        double dx = player.getX() - (waypoint.getX() + 0.5);
-        double dz = player.getZ() - (waypoint.getZ() + 0.5);
-        return dx * dx + dz * dz <= radius * radius;
-    }
-
-    private static boolean shouldAdvanceWaypoint(ClientPlayerEntity player, BlockPos current, BlockPos next) {
-        Vec3d p = new Vec3d(player.getX(), player.getY(), player.getZ());
-        Vec3d c = Vec3d.ofCenter(current);
-        Vec3d n = Vec3d.ofCenter(next);
-
-        double distCurrSq = p.squaredDistanceTo(c);
-        double distNextSq = p.squaredDistanceTo(n);
-
-        // Require meaningful difference so noisy micro-movements don't flip indices.
-        return distNextSq + 0.10 < distCurrSq;
-    }
-
-    /**
-     * Returns a blended target between the current and next path nodes.
-     * Straight segments use stronger lookahead, while corners reduce blending
-     * to avoid overcutting into obstacle edges.
-     */
-    private Vec3d getSmoothedTarget(List<BlockPos> path, int idx, ClientPlayerEntity player) {
-        if (path == null || path.isEmpty() || idx < 0 || idx >= path.size()) {
-            return new Vec3d(player.getX(), player.getY(), player.getZ());
-        }
-
-        Vec3d current = Vec3d.ofCenter(path.get(idx));
-        if (idx >= path.size() - 1) {
-            return current;
-        }
-
-        Vec3d next = Vec3d.ofCenter(path.get(idx + 1));
-        double blend = LOOKAHEAD_DEFAULT_BLEND;
-
-        if (idx + 2 < path.size()) {
-            Vec3d afterNext = Vec3d.ofCenter(path.get(idx + 2));
-            Vec3d seg = next.subtract(current);
-            Vec3d segNext = afterNext.subtract(next);
-            double segLen = seg.length();
-            double segNextLen = segNext.length();
-            if (segLen > 0.001 && segNextLen > 0.001) {
-                double dirDot = seg.dotProduct(segNext) / (segLen * segNextLen);
-                if (dirDot < 0.70) {
-                    blend = LOOKAHEAD_CORNER_BLEND;
-                } else if (dirDot > 0.95) {
-                    blend = LOOKAHEAD_STRAIGHT_BLEND;
-                }
-            }
-        }
-
-        Vec3d playerPos = new Vec3d(player.getX(), player.getY(), player.getZ());
-        if (playerPos.distanceTo(current) < 0.9) {
-            blend = Math.min(0.75, blend + 0.12);
-        }
-
-        return current.lerp(next, blend);
-    }
-
-    // ═══════════════════════════════════════════════════════════════
-    // Position snapping — find nearest valid re-entry point on path
-    // ═══════════════════════════════════════════════════════════════
-
-    /**
-     * Scans the current path for the nearest node to the player's actual position.
-     * Returns the index of that node, or -1 if no suitable node is found.
-     * Used after disruptions (combat, knockback) to resume path-following
-     * from the closest valid point rather than backtracking to the start.
-     */
-    private int snapToPath(ClientPlayerEntity player, List<BlockPos> path) {
-        if (path == null || path.isEmpty()) return -1;
-
-        double px = player.getX(), py = player.getY(), pz = player.getZ();
-        double bestDistSq = Double.MAX_VALUE;
-        int bestIdx = -1;
-
-        // Scan forward from current index (prefer ahead over behind)
-        int searchStart = Math.max(0, currentPathIndex - 3);
-        int searchEnd = Math.min(path.size(), currentPathIndex + 20);
-
-        for (int i = searchStart; i < searchEnd; i++) {
-            BlockPos wp = path.get(i);
-            double dx = px - (wp.getX() + 0.5);
-            double dy = py - wp.getY();
-            double dz = pz - (wp.getZ() + 0.5);
-            double dSq = dx * dx + dy * dy + dz * dz;
-
-            if (dSq < bestDistSq) {
-                bestDistSq = dSq;
-                bestIdx = i;
-            }
-        }
-
-        // Only snap if within 8 blocks of a path node
-        if (bestDistSq > 64.0) return -1;
-        return bestIdx;
-    }
-
-    // ═══════════════════════════════════════════════════════════════
-    // Path splicing — join a new segment onto the existing path
-    // ═══════════════════════════════════════════════════════════════
-
-    /**
-     * Attempts to splice a new path segment from the player's current position
-     * onto the existing path. If the new segment reaches a point near the existing
-     * path, the two are merged at the overlap. Otherwise, falls back to full repath.
-     *
-     * @return spliced path, or null if splicing is not possible
-     */
-    private List<BlockPos> splicePath(List<BlockPos> existingPath, List<BlockPos> newSegment) {
-        if (existingPath == null || existingPath.isEmpty()
-                || newSegment == null || newSegment.isEmpty()) {
-            return null;
-        }
-
-        // Find where (if anywhere) the new segment meets the existing path
-        BlockPos newEnd = newSegment.get(newSegment.size() - 1);
-
-        int overlapIdx = -1;
-        double bestOverlapDist = Double.MAX_VALUE;
-        for (int i = currentPathIndex; i < existingPath.size(); i++) {
-            BlockPos ep = existingPath.get(i);
-            double dx = newEnd.getX() - ep.getX();
-            double dz = newEnd.getZ() - ep.getZ();
-            double dy = newEnd.getY() - ep.getY();
-            double dSq = dx * dx + dy * dy + dz * dz;
-            if (dSq < bestOverlapDist && dSq <= 4.0) { // within 2 blocks
-                bestOverlapDist = dSq;
-                overlapIdx = i;
-            }
-        }
-
-        if (overlapIdx < 0) return null; // no overlap — can't splice
-
-        // Build spliced path: newSegment + existingPath[overlapIdx+1..]
-        List<BlockPos> spliced = new ArrayList<>(newSegment.size() + (existingPath.size() - overlapIdx));
-        spliced.addAll(newSegment);
-        for (int i = overlapIdx + 1; i < existingPath.size(); i++) {
-            spliced.add(existingPath.get(i));
-        }
-
-        LOGGER.info("[Splice] Spliced {} new + {} existing nodes at overlap index {}",
-                newSegment.size(), existingPath.size() - overlapIdx - 1, overlapIdx);
-        return spliced;
-    }
-
-    // ═══════════════════════════════════════════════════════════════
-    // Pipelined segment computation — compute next step while moving
-    // ═══════════════════════════════════════════════════════════════
-
-    /**
-     * Kicks off background computation of the NEXT step's path while following the
-     * current step. Called during MOVING state when the next step hasn't been computed yet.
-     */
-    private void pipelineNextStepPath(ClientPlayerEntity player, ClientWorld world) {
-        int nextStep = currentStepIndex + 1;
-        if (nextStep >= currentMacro.getSteps().size()) return; // no next step
-        if (precomputedPaths == null || nextStep >= precomputedPaths.size()) return;
-        if (precomputedPaths.get(nextStep) != null) return; // already computed
-        if (pipelineBusy) return; // already computing
-        if (pipelineStepIndex == nextStep) return; // already submitted
-
-        MacroStep step = currentMacro.getSteps().get(nextStep);
-        BlockPos goal = step.getDestination();
-
-        // Use current step's destination as the starting point for next path
-        MacroStep currentStep = currentMacro.getSteps().get(currentStepIndex);
-        BlockPos from = currentStep.getDestination();
-
-        if (!BlockUtils.isChunkLoaded(world, goal)) return; // can't compute yet
-
-        pipelineBusy = true;
-        pipelineStepIndex = nextStep;
-        final int stepIdx = nextStep;
-        final BlockPos fromFinal = from;
-        final BlockPos goalFinal = goal;
-        final boolean onlyGround = currentMacro.getConfig().isOnlyGround();
-        final int maxNodes = MacroModClient.getConfigManager().getConfig().getMaxPathNodes();
-
-        pathfindingExecutor.submit(() -> {
-            try {
-                List<BlockPos> path = null;
-                PathHandler pathHandler = MacroModClient.getPathHandler();
-                if (pathHandler != null) {
-                    List<BaseBlockPos> sp = pathHandler.findPath(
-                        new BaseBlockPos(fromFinal.getX(), fromFinal.getY(), fromFinal.getZ()),
-                        new ExactGoal(new BaseBlockPos(goalFinal.getX(), goalFinal.getY(), goalFinal.getZ())),
-                        500L
-                    );
-                    path = toBlockPosPath(sp);
-                }
-                if (path == null || path.isEmpty()) {
-                    PathFinder bgPathFinder = new PathFinder();
-                    bgPathFinder.setOnlyGround(onlyGround);
-                    bgPathFinder.setMaxNodes(maxNodes);
-                    path = bgPathFinder.findPath(fromFinal, goalFinal, world);
-                }
-                if (precomputedPaths != null && stepIdx < precomputedPaths.size()) {
-                    precomputedPaths.set(stepIdx, path);
-                }
-                LOGGER.info("[Pipeline] Pre-computed path for step {}: {} nodes", stepIdx,
-                        path != null ? path.size() : 0);
-            } catch (Exception e) {
-                LOGGER.error("[Pipeline] Background path computation failed for step {}", stepIdx, e);
-            } finally {
-                pipelineBusy = false;
-            }
-        });
-    }
-
     private void advanceToNextStep() {
         currentStepIndex++;
         radiusScanDone = false;
@@ -1797,22 +1567,19 @@ public class MacroExecutor {
 
         if (currentStepIndex >= currentMacro.getSteps().size()) {
             if (currentMacro.getConfig().isLoop()) {
-                // Reset and loop — clear all precomputed paths since player is now
-                // at the last step's destination, not the original start position
+                // Reset and loop
                 currentMacro.reset();
                 currentStepIndex = 0;
-                if (precomputedPaths != null) {
-                    for (int i = 0; i < precomputedPaths.size(); i++) {
-                        precomputedPaths.set(i, null);
-                    }
-                }
                 state = MacroState.PATHFINDING;
-                LOGGER.info("Macro loop: restarting from step 0");
+                LOGGER.info("[macro.metrics.lifecycle] macroLoopRestart step={} mined={} skipped={}",
+                    currentStepIndex, blocksMinedTotal, blocksSkippedTotal);
             } else {
                 movementHelper.releaseAllInputs();
                 state = MacroState.COMPLETED;
+                logMetricsSummary("completed");
                 printStats();
-                LOGGER.info("Macro '{}' completed", currentMacro.getName());
+                LOGGER.info("[macro.metrics.lifecycle] macroCompleted name={} mined={} skipped={} distance={}",
+                    currentMacro.getName(), blocksMinedTotal, blocksSkippedTotal, totalDistance);
             }
         } else {
             currentBlockTargetIndex = 0;
@@ -1820,6 +1587,7 @@ public class MacroExecutor {
             aimLocked = false;  // Unlock aim for new step
             aimLockedAtMs = -1L;
             state = MacroState.PATHFINDING;
+            repathCount++;
         }
     }
 
@@ -1839,17 +1607,6 @@ public class MacroExecutor {
         return currentMacro.getSteps().get(currentStepIndex);
     }
 
-    private List<BlockPos> toBlockPosPath(List<BaseBlockPos> stevebotPath) {
-        if (stevebotPath == null || stevebotPath.isEmpty()) {
-            return List.of();
-        }
-        List<BlockPos> converted = new ArrayList<>(stevebotPath.size());
-        for (BaseBlockPos pos : stevebotPath) {
-            converted.add(new BlockPos(pos.getX(), pos.getY(), pos.getZ()));
-        }
-        return converted;
-    }
-
     private void printStats() {
         long elapsed = System.currentTimeMillis() - startTime;
         float seconds = elapsed / 1000.0f;
@@ -1862,6 +1619,221 @@ public class MacroExecutor {
             client.player.sendMessage(Text.translatable("macromod.chat.stats_time", seconds).formatted(Formatting.WHITE), false);
             client.player.sendMessage(Text.translatable("macromod.chat.stats_distance", totalDistance).formatted(Formatting.WHITE), false);
         }
+    }
+
+    private void resetRunMetrics() {
+        lastMetricsSnapshotMs = 0L;
+
+        tickCount = 0L;
+        tickTotalNs = 0L;
+        tickMaxNs = 0L;
+
+        precomputedPathQueries = 0L;
+        precomputedPathSuccess = 0L;
+        precomputedPathNodesTotal = 0L;
+        precomputedPathTotalNs = 0L;
+        precomputedPathMaxNs = 0L;
+
+        livePathQueries = 0L;
+        livePathSuccess = 0L;
+        livePathNodesTotal = 0L;
+        livePathTotalNs = 0L;
+        livePathMaxNs = 0L;
+
+        repathCount = 0L;
+        stuckRecoveries = 0L;
+        navigationTimeouts = 0L;
+        chunkWaitEvents = 0L;
+        chunkWaitTimeoutSkips = 0L;
+        chunkWaitTotalMs = 0L;
+        chunkWaitStartMs = -1L;
+
+        autoAttackPauseCount = 0L;
+        autoAttackPauseTotalMs = 0L;
+        autoAttackPauseStartMs = -1L;
+
+        eliminationModeCount = 0L;
+        eliminationModeTotalMs = 0L;
+        eliminationModeStartMs = -1L;
+
+        miningSkipUnripe = 0L;
+        miningSkipRange = 0L;
+        miningSkipNoLos = 0L;
+        miningSkipBlockChanged = 0L;
+        miningSkipBlockReplaced = 0L;
+        miningSkipTimeout = 0L;
+
+        attackLostLosDrops = 0L;
+        attackChaseStuckSkips = 0L;
+        attackChaseJumpAttempts = 0L;
+
+        metricsSummaryLogged = false;
+    }
+
+    private List<BlockPos> findPathWithMetrics(
+            BlockPos from,
+            BlockPos goal,
+            ClientWorld world,
+            long timeoutMs,
+            boolean precompute,
+            int stepIndex) {
+        long pathStartNs = System.nanoTime();
+        List<BlockPos> path = oringoPathModule.findPath(
+            from,
+            goal,
+            world,
+            currentMacro.getConfig().isOnlyGround(),
+            MacroModClient.getConfigManager().getConfig().getMaxPathNodes(),
+            timeoutMs,
+            MacroModClient.getPathHandler(),
+            fallbackPathFinder
+        );
+        long elapsedNs = System.nanoTime() - pathStartNs;
+
+        int nodes = path != null ? path.size() : 0;
+        boolean success = nodes > 0;
+
+        if (precompute) {
+            precomputedPathQueries++;
+            precomputedPathTotalNs += elapsedNs;
+            if (elapsedNs > precomputedPathMaxNs) {
+                precomputedPathMaxNs = elapsedNs;
+            }
+            if (success) {
+                precomputedPathSuccess++;
+                precomputedPathNodesTotal += nodes;
+            }
+        } else {
+            livePathQueries++;
+            livePathTotalNs += elapsedNs;
+            if (elapsedNs > livePathMaxNs) {
+                livePathMaxNs = elapsedNs;
+            }
+            if (success) {
+                livePathSuccess++;
+                livePathNodesTotal += nodes;
+            }
+        }
+
+        LOGGER.info("[macro.metrics.path] mode={} step={} from={} goal={} success={} nodes={} durationMs={} timeoutMs={}",
+            precompute ? "precompute" : "live",
+            stepIndex,
+            from,
+            goal,
+            success,
+            nodes,
+            elapsedNs / 1_000_000.0,
+            timeoutMs);
+
+        return path;
+    }
+
+    private void maybeLogMetricsSnapshot() {
+        if (startTime <= 0 || metricsSummaryLogged) {
+            return;
+        }
+
+        long now = System.currentTimeMillis();
+        if (lastMetricsSnapshotMs > 0 && now - lastMetricsSnapshotMs < METRICS_SNAPSHOT_INTERVAL_MS) {
+            return;
+        }
+        lastMetricsSnapshotMs = now;
+
+        long elapsedMs = now - startTime;
+        long totalPathQueries = precomputedPathQueries + livePathQueries;
+        long totalPathSuccess = precomputedPathSuccess + livePathSuccess;
+        String macroName = currentMacro != null ? currentMacro.getName() : "LineFarm";
+        int totalSteps = currentMacro != null ? currentMacro.getSteps().size() : 0;
+
+        LOGGER.info("[macro.metrics.snapshot] macro={} elapsedMs={} state={} step={}/{} mined={} skipped={} pathSuccess={}/{} preAvgMs={} liveAvgMs={} repath={} stuckRecoveries={} navTimeouts={} chunkWaitMs={} tickAvgUs={} tickMaxUs={}",
+            macroName,
+            elapsedMs,
+            state,
+            currentStepIndex,
+            totalSteps,
+            blocksMinedTotal,
+            blocksSkippedTotal,
+            totalPathSuccess,
+            totalPathQueries,
+            precomputedPathQueries > 0 ? (precomputedPathTotalNs / 1_000_000.0) / precomputedPathQueries : 0.0,
+            livePathQueries > 0 ? (livePathTotalNs / 1_000_000.0) / livePathQueries : 0.0,
+            repathCount,
+            stuckRecoveries,
+            navigationTimeouts,
+            chunkWaitTotalMs,
+            tickCount > 0 ? (tickTotalNs / 1_000.0) / tickCount : 0.0,
+            tickMaxNs / 1_000.0);
+    }
+
+    private void logMetricsSummary(String reason) {
+        if (metricsSummaryLogged || startTime <= 0) {
+            return;
+        }
+
+        long now = System.currentTimeMillis();
+
+        if (chunkWaitStartMs >= 0) {
+            chunkWaitTotalMs += now - chunkWaitStartMs;
+            chunkWaitStartMs = -1L;
+        }
+        if (autoAttackPauseStartMs >= 0) {
+            autoAttackPauseTotalMs += now - autoAttackPauseStartMs;
+            autoAttackPauseStartMs = -1L;
+        }
+        if (eliminationModeStartMs >= 0) {
+            eliminationModeTotalMs += now - eliminationModeStartMs;
+            eliminationModeStartMs = -1L;
+        }
+
+        long elapsedMs = now - startTime;
+        long totalPathQueries = precomputedPathQueries + livePathQueries;
+        long totalPathSuccess = precomputedPathSuccess + livePathSuccess;
+        long totalPathCostNs = precomputedPathTotalNs + livePathTotalNs;
+        String macroName = currentMacro != null ? currentMacro.getName() : "LineFarm";
+        int totalSteps = currentMacro != null ? currentMacro.getSteps().size() : 0;
+        int doneSteps = totalSteps > 0 ? Math.min(currentStepIndex, totalSteps) : 0;
+
+        LOGGER.info("[macro.metrics.summary] reason={} macro={} elapsedMs={} stepsDone={}/{} mined={} skipped={} distance={} pathSuccess={}/{} preAvgMs={} preMaxMs={} liveAvgMs={} liveMaxMs={} totalPathCostMs={} repath={} stuckRecoveries={} navTimeouts={} chunkWaitEvents={} chunkWaitMs={} chunkWaitTimeoutSkips={} autoAttackPauseCount={} autoAttackPauseMs={} eliminationCount={} eliminationMs={} attackLostLosDrops={} attackChaseStuckSkips={} attackChaseJumpAttempts={} miningSkipUnripe={} miningSkipRange={} miningSkipNoLos={} miningSkipBlockChanged={} miningSkipBlockReplaced={} miningSkipTimeout={} tickCount={} tickAvgUs={} tickMaxUs={} tickCostPerSecondMs={}",
+            reason,
+            macroName,
+            elapsedMs,
+            doneSteps,
+            totalSteps,
+            blocksMinedTotal,
+            blocksSkippedTotal,
+            totalDistance,
+            totalPathSuccess,
+            totalPathQueries,
+            precomputedPathQueries > 0 ? (precomputedPathTotalNs / 1_000_000.0) / precomputedPathQueries : 0.0,
+            precomputedPathMaxNs / 1_000_000.0,
+            livePathQueries > 0 ? (livePathTotalNs / 1_000_000.0) / livePathQueries : 0.0,
+            livePathMaxNs / 1_000_000.0,
+            totalPathCostNs / 1_000_000.0,
+            repathCount,
+            stuckRecoveries,
+            navigationTimeouts,
+            chunkWaitEvents,
+            chunkWaitTotalMs,
+            chunkWaitTimeoutSkips,
+            autoAttackPauseCount,
+            autoAttackPauseTotalMs,
+            eliminationModeCount,
+            eliminationModeTotalMs,
+            attackLostLosDrops,
+            attackChaseStuckSkips,
+            attackChaseJumpAttempts,
+            miningSkipUnripe,
+            miningSkipRange,
+            miningSkipNoLos,
+            miningSkipBlockChanged,
+            miningSkipBlockReplaced,
+            miningSkipTimeout,
+            tickCount,
+            tickCount > 0 ? (tickTotalNs / 1_000.0) / tickCount : 0.0,
+            tickMaxNs / 1_000.0,
+            elapsedMs > 0 ? (tickTotalNs / 1_000_000.0) / (elapsedMs / 1000.0) : 0.0);
+
+        metricsSummaryLogged = true;
     }
 
     /**
@@ -1889,7 +1861,8 @@ public class MacroExecutor {
      * <p>Falls back to the centre of the nearest side face if no candidate passes.</p>
      */
     private static Vec3d visibleFaceCentre(Vec3d eye, BlockPos pos, int playerBlockY,
-                                            net.minecraft.client.world.ClientWorld world) {
+                                            net.minecraft.client.world.ClientWorld world,
+                                            net.minecraft.entity.Entity entity) {
         double cx = pos.getX() + 0.5;
         double cy = pos.getY() + 0.5;
         double cz = pos.getZ() + 0.5;
@@ -1933,15 +1906,13 @@ public class MacroExecutor {
         // For each face in priority order, test candidate points with raycasts
         double inset = 0.1; // pixels from true edge to avoid precision issues
         for (int i = 0; i < faces.length; i++) {
-            if (!BlockUtils.isAir(world, adjs[i])) continue; // face buried by adjacent solid
-
             Vec3d[] candidates = buildFaceCandidates(pos, faces[i], adjs[i], inset);
             for (Vec3d candidate : candidates) {
                 net.minecraft.world.RaycastContext ctx = new net.minecraft.world.RaycastContext(
                         eye, candidate,
                         net.minecraft.world.RaycastContext.ShapeType.COLLIDER,
                         net.minecraft.world.RaycastContext.FluidHandling.NONE,
-                        (net.minecraft.entity.Entity) null);
+                        entity);
                 net.minecraft.util.hit.BlockHitResult hit = world.raycast(ctx);
                 // Accept if the ray reached the target block
                 if (hit.getBlockPos().equals(pos)) {
@@ -1949,8 +1920,30 @@ public class MacroExecutor {
                 }
             }
         }
-        // All candidates occluded — best-effort nearest side centre
-        return fSide1;
+        // All candidates occluded
+        return null;
+    }
+
+    /**
+     * Reach test against the block's AABB (1x1x1), not just its center.
+     * This avoids false negatives when the visible face is in reach but the center is not.
+     */
+    private static boolean isWithinMiningReach(Vec3d eyePos, BlockPos blockPos, double reachDistance) {
+        double minX = blockPos.getX();
+        double minY = blockPos.getY();
+        double minZ = blockPos.getZ();
+        double maxX = minX + 1.0;
+        double maxY = minY + 1.0;
+        double maxZ = minZ + 1.0;
+
+        double closestX = Math.max(minX, Math.min(eyePos.x, maxX));
+        double closestY = Math.max(minY, Math.min(eyePos.y, maxY));
+        double closestZ = Math.max(minZ, Math.min(eyePos.z, maxZ));
+
+        double dx = eyePos.x - closestX;
+        double dy = eyePos.y - closestY;
+        double dz = eyePos.z - closestZ;
+        return dx * dx + dy * dy + dz * dz <= reachDistance * reachDistance;
     }
 
     /**

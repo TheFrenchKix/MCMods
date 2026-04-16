@@ -37,21 +37,21 @@ public class EasyBlockGui extends BasePopupScreen {
     // ═══════════════════════════════════════════════════════════════════
     // Public color palette (used by sub-screens)
     // ═══════════════════════════════════════════════════════════════════
-    public static final int C_BG         = 0xFF0C0C14;
-    public static final int C_PANEL_HEAD = 0xFF101018;
-    public static final int C_CARD       = 0xFF141420;
-    public static final int C_CARD_HOV   = 0xFF1A1A2C;
-    public static final int C_CARD_SEL   = 0xFF1A2844;
-    public static final int C_DIVIDER    = 0xFF222233;
-    public static final int C_ACCENT     = 0xFF4677FF;
-    public static final int C_ACCENT_HI  = 0xFF5A8AFF;
-    public static final int C_DANGER     = 0xFFFF4444;
-    public static final int C_SUCCESS    = 0xFF44FF88;
-    public static final int C_TEXT       = 0xFFFFFFFF;
-    public static final int C_TEXT2      = 0xFFD3D3D3;
-    public static final int C_TEXT3      = 0xFF808080;
-    public static final int C_NAV_BG     = 0xFF1A1A28;
-    public static final int C_NAV_ACT    = 0xFF252538;
+    public static final int C_BG         = 0xFF0D161D;
+    public static final int C_PANEL_HEAD = 0xFF132935;
+    public static final int C_CARD       = 0xFF1A2F3A;
+    public static final int C_CARD_HOV   = 0xFF20404D;
+    public static final int C_CARD_SEL   = 0xFF245765;
+    public static final int C_DIVIDER    = 0xFF2E505E;
+    public static final int C_ACCENT     = 0xFF2F9FAA;
+    public static final int C_ACCENT_HI  = 0xFF42BBC6;
+    public static final int C_DANGER     = 0xFFD96363;
+    public static final int C_SUCCESS    = 0xFF58D38A;
+    public static final int C_TEXT       = 0xFFEAF3F6;
+    public static final int C_TEXT2      = 0xFFC6D8E0;
+    public static final int C_TEXT3      = 0xFF8CA5B0;
+    public static final int C_NAV_BG     = 0xFF233A45;
+    public static final int C_NAV_ACT    = 0xFF2B4B59;
 
     // ═══════════════════════════════════════════════════════════════════
     // Layout constants
@@ -1524,7 +1524,7 @@ public class EasyBlockGui extends BasePopupScreen {
                 return true;
             }
             if (imx >= fovRightX && imx < fovRightX + 16) {
-                optFOV = Math.min(110, optFOV + 5);
+                optFOV = Math.min(200, optFOV + 5);
                 syncFOV();
                 return true;
             }

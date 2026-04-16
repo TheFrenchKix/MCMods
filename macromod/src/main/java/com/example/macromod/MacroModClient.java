@@ -14,7 +14,7 @@ import com.example.macromod.recording.MacroRecorder;
 import com.example.macromod.recording.RecordingState;
 import com.example.macromod.ui.HudOverlay;
 import com.example.macromod.ui.KeybindHudOverlay;
-import com.example.macromod.ui.easyblock.EasyBlockGui;
+import com.example.macromod.ui.oringo.OringoClickGui;
 import com.example.macromod.ui.PathDebugRenderer;
 import com.example.macromod.ui.ESPRenderer;
 
@@ -301,7 +301,7 @@ public class MacroModClient implements ClientModInitializer {
         // Open GUI
         while (openGuiKey.wasPressed()) {
             if (client.currentScreen == null) {
-                client.setScreen(new EasyBlockGui());
+                client.setScreen(new OringoClickGui());
             }
         }
 

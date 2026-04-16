@@ -1,6 +1,5 @@
 package com.example.macromod.manager;
 
-import com.example.macromod.MacroModClient;
 import net.fabricmc.api.EnvType;
 import net.fabricmc.api.Environment;
 import net.minecraft.client.MinecraftClient;
@@ -13,9 +12,6 @@ import java.util.Collections;
 import java.util.List;
 import java.util.Locale;
 
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-
 /**
  * Detects Hypixel SkyBlock fishing hotspots by scanning for invisible ArmorStand
  * entities whose custom name contains "HOTSPOT" (case-insensitive).
@@ -26,7 +22,6 @@ import org.slf4j.LoggerFactory;
 @Environment(EnvType.CLIENT)
 public class HotspotManager {
 
-    private static final Logger LOGGER = LoggerFactory.getLogger("macromod");
     private static final HotspotManager INSTANCE = new HotspotManager();
 
     /** Detection radius in blocks. */
@@ -44,9 +39,6 @@ public class HotspotManager {
     /** Called every client tick to scan for hotspot ArmorStands. */
     public void tick() {
         hotspots.clear();
-
-        // Skip scan work unless hotspot ESP is enabled.
-        if (!MacroModClient.getConfigManager().getConfig().isHotspotEspEnabled()) return;
 
         MinecraftClient client = MinecraftClient.getInstance();
         if (client.world == null || client.player == null) return;

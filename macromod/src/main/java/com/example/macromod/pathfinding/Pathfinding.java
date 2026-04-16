@@ -16,8 +16,6 @@ import com.example.macromod.pathfinding.actions.ActionCosts;
 import com.example.macromod.pathfinding.actions.ActionFactory;
 import com.example.macromod.pathfinding.actions.ActionFactoryProvider;
 import com.example.macromod.pathfinding.actions.playeractions.Action;
-import com.example.macromod.pathfinding.actions.playeractions.ActionSmoothWalk;
-import com.example.macromod.pathfinding.actions.playeractions.ActionWalk;
 import com.example.macromod.pathfinding.goal.Goal;
 import com.example.macromod.pathfinding.nodes.BestNodesContainer;
 import com.example.macromod.pathfinding.nodes.Node;
@@ -31,9 +29,8 @@ import com.example.macromod.player.PlayerUtils;
 public class Pathfinding {
 
 
-    private static final double H_COST_WEIGHT = 1.3;
+    private static final double H_COST_WEIGHT = 1.0;
     private static final int MAX_UNLOADED_HITS = 400;
-    private static final int MAX_BETTER_PATHS = 2;
     private static final int MAX_WORSE_NODES = 500;
 
     private static final ActionFactoryProvider actionFactoryProvider = new ActionFactoryProvider();
@@ -78,7 +75,6 @@ public class Pathfinding {
         final long timeStart = System.currentTimeMillis();
         int nUnloadedHits = 0;
         int nWorseThanBest = 0;
-        int nBetterPathFound = 0;
         long timeLast = System.currentTimeMillis();
         final PlayerSnapshot baseSnapshot = PlayerUtils.createSnapshot();
         baseSnapshot.setPlayerHealth((int) PlayerUtils.getHealth());
@@ -91,8 +87,7 @@ public class Pathfinding {
         // calculate path until...
         //	- open set is empty
         //	- we hit too many unloaded chunks (goal is most likely in an unloaded chunk)
-        //	- we already found enough paths (no need to improve on existing paths)
-        while (!openSet.isEmpty() && nUnloadedHits < MAX_UNLOADED_HITS && nBetterPathFound < MAX_BETTER_PATHS) {
+        while (!openSet.isEmpty() && nUnloadedHits < MAX_UNLOADED_HITS) {
 
             // timeout
             if (checkForTimeout(timeStart, timeoutInMs)) {
@@ -128,11 +123,12 @@ public class Pathfinding {
                 pathfindingResult.paths.add(currentPath);
                 if (currentPath.getCost() < bestPath.getCost()) {
                     StevebotLog.logNonCritical("Found possible path: " + ((System.currentTimeMillis() - timeStart)) + "ms, cost: " + currentPath.getCost());
-                    nBetterPathFound++;
                     bestPath = currentPath;
                     pathfindingResult.betterPathsFound++;
                 }
-                continue;
+
+                // Under admissible heuristic + best-first f-order, first reached goal is optimal.
+                break;
             }
 
             // check if cost of the current node is already higher than prev. path cost -> if yes, ignore current node
@@ -209,31 +205,24 @@ public class Pathfinding {
 
                     // calculate cost of dest. node; ignore action when  it does not improve the already existing cost
                     final double newCost = current.gcost() + result.estimatedCost;
-                    if (!next.isOpen() && newCost >= next.gcost()) {
+                    if (newCost >= next.gcost()) {
                         continue;
                     }
 
-                    // open dest node and set new costs
-                    if (newCost < next.gcost() || !next.isOpen()) {
+                    // create action and setup destination node
+                    pathfindingResult.actionsCreated++;
+                    Action action = factory.createAction(current, result);
+                    next.setGCost(newCost);
+                    next.setHCost(goal.calcHCost(next.getPos()) * H_COST_WEIGHT);
+                    next.setPrev(current);
+                    next.setAction(action);
 
-                        // if the closed dest. node already has a score from a prev. action, check if the improvement is enough to justify opening it again
-                        if (next.gcost() < ActionCosts.get().COST_INFINITE - 10 && !next.isOpen()) {
-                            double improvement = next.gcost() - newCost;
-                            if (improvement < 1) {
-                                continue;
-                            }
-                        }
-
-                        // create action and setup dest. node
-                        pathfindingResult.actionsCreated++;
-                        Action action = factory.createAction(current, result);
-                        next.setGCost(newCost);
-                        next.setHCost(goal.calcHCost(next.getPos()) * H_COST_WEIGHT);
-                        next.setPrev(current);
-                        next.setAction(action);
-                        next.open(openSet);
-                        bestNodes.update(posStart, next, goal);
+                    // If already queued, remove old priority entry before re-inserting with lower f-cost.
+                    if (next.isOpen()) {
+                        openSet.remove(next);
                     }
+                    next.open(openSet);
+                    bestNodes.update(posStart, next, goal);
                 }
 
             }
@@ -345,8 +334,6 @@ public class Pathfinding {
         nodes.add(start);
         Collections.reverse(nodes);
 
-        nodes = smoothPath(nodes);
-
         Path path;
         if (reachedGoal) {
             path = new CompletedPath(end.gcost(), nodes);
@@ -355,121 +342,6 @@ public class Pathfinding {
         }
 
         return path;
-    }
-
-
-    /**
-     * Maximum perpendicular distance (blocks²) an intermediate A* node may deviate
-     * from the straight line between the anchor and the merge candidate.
-     * 0.75² = 0.5625 — allows the E/NE/N staircase pattern (max deviation ≈ 0.71)
-     * while rejecting real obstacle-avoidance detours (deviation ≥ 1 block).
-     */
-    private static final double NODE_LINE_THRESHOLD_SQ = 0.75 * 0.75;
-
-    /**
-     * Reduces intermediate walk nodes by merging consecutive same-Y ActionWalk
-     * segments whose positions are nearly collinear.
-     * <p>
-     * Collinearity (not Bresenham LOS) is the merge criterion: the A* already
-     * verified every node is walkable; if the intermediate nodes lie within
-     * NODE_LINE_THRESHOLD_SQ of the straight line between the anchor and the
-     * candidate endpoint, the player can safely walk directly to the endpoint.
-     */
-    private List<Node> smoothPath(List<Node> nodes) {
-        if (nodes.size() <= 2) {
-            return nodes;
-        }
-
-        List<Node> smoothed = new ArrayList<>();
-        smoothed.add(nodes.get(0));
-
-        int anchor = 0;
-        while (anchor < nodes.size() - 1) {
-            int farthest = anchor + 1;
-
-            for (int candidate = anchor + 2; candidate < nodes.size(); candidate++) {
-                Node anchorNode    = nodes.get(anchor);
-                Node candidateNode = nodes.get(candidate);
-
-                // Must stay on the same Y level — ActionSmoothWalk is flat-only
-                if (candidateNode.getPos().getY() != anchorNode.getPos().getY()) {
-                    break;
-                }
-
-                // Every node arriving between anchor+1 and candidate must be a plain walk
-                boolean allWalk = true;
-                for (int k = anchor + 1; k <= candidate; k++) {
-                    Action a = nodes.get(k).getAction();
-                    if (!(a instanceof ActionWalk) || a.hasModifications()) {
-                        allWalk = false;
-                        break;
-                    }
-                }
-                if (!allWalk) {
-                    break;
-                }
-
-                // All intermediate node positions must lie close to the anchor→candidate line
-                if (nodesNearLine(nodes, anchor, candidate)) {
-                    farthest = candidate;
-                } else {
-                    break; // farther candidates deviate even more
-                }
-            }
-
-            Node nextNode = nodes.get(farthest);
-            smoothed.add(nextNode);
-
-            // Replace the action on the merged endpoint with a long-range smooth walk
-            if (farthest > anchor + 1) {
-                Node anchorNode = nodes.get(anchor);
-                double cost = 0;
-                for (int k = anchor + 1; k <= farthest; k++) {
-                    cost += nodes.get(k).getAction().getCost();
-                }
-                nextNode.setAction(new ActionSmoothWalk(anchorNode, nextNode, cost));
-                nextNode.setPrev(anchorNode);
-            }
-
-            anchor = farthest;
-        }
-
-        return smoothed;
-    }
-
-    /**
-     * Returns true when every intermediate node (strictly between anchorIdx and
-     * candidateIdx) lies within {@link #NODE_LINE_THRESHOLD_SQ} of the XZ
-     * straight line drawn from anchor to candidate.
-     */
-    private static boolean nodesNearLine(List<Node> nodes, int anchorIdx, int candidateIdx) {
-        if (candidateIdx <= anchorIdx + 1) {
-            return true; // no intermediates
-        }
-        BaseBlockPos from = nodes.get(anchorIdx).getPos();
-        BaseBlockPos to   = nodes.get(candidateIdx).getPos();
-
-        double dx    = to.getX() - from.getX();
-        double dz    = to.getZ() - from.getZ();
-        double lenSq = dx * dx + dz * dz;
-        if (lenSq < 0.001) {
-            return true; // anchor and candidate are the same XZ position
-        }
-
-        for (int k = anchorIdx + 1; k < candidateIdx; k++) {
-            BaseBlockPos p  = nodes.get(k).getPos();
-            double px = p.getX() - from.getX();
-            double pz = p.getZ() - from.getZ();
-
-            // Perpendicular distance squared from p to the infinite line through from→to
-            double cross = px * dz - pz * dx; // |cross| = dist * |dir|
-            double devSq = (cross * cross) / lenSq;
-
-            if (devSq > NODE_LINE_THRESHOLD_SQ) {
-                return false;
-            }
-        }
-        return true;
     }
 
 

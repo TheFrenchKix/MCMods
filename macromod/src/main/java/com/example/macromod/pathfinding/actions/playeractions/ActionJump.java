@@ -159,7 +159,7 @@ public class ActionJump extends Action {
             }
 
             // check gap
-            if (!ActionUtils.canJumpThrough(node.getPosCopy().add(direction.dx, 0, direction.dy))) {
+            if (!ActionUtils.canJumpThrough(node.getPosCopy().add(direction.dx, 0, direction.dz))) {
                 return Result.invalid();
             }
 
@@ -336,7 +336,7 @@ public class ActionJump extends Action {
 
         @Override
         public Direction getDirection() {
-            return Direction.WEST;
+            return Direction.NORTH_WEST;
         }
 
     }
