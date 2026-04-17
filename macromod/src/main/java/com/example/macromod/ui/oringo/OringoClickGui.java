@@ -117,11 +117,27 @@ public class OringoClickGui extends Screen {
         if (panels.isEmpty()) {
             int baseX = Math.max(8, width / 2 - 230);
             int baseY = Math.max(16, height / 2 - 180);
-            panels.add(new OringoPanel("macros", "Macros", baseX, baseY, 220, HEADER_H));
-            panels.add(new OringoPanel("path", "Pathing", baseX + 230, baseY, 220, HEADER_H));
-            panels.add(new OringoPanel("automation", "Automation", baseX, baseY + 185, 220, HEADER_H));
-            panels.add(new OringoPanel("visual", "Visuals", baseX + 230, baseY + 185, 220, HEADER_H));
-            panels.add(new OringoPanel("misc", "Misc", baseX + 115, baseY + 385, 250, HEADER_H));
+            ModConfig cfg = MacroModClient.getConfigManager().getConfig();
+            panels.add(new OringoPanel("macros", "Macros",
+                cfg.getOringoMacrosPanelX() >= 0 ? cfg.getOringoMacrosPanelX() : baseX,
+                cfg.getOringoMacrosPanelY() >= 0 ? cfg.getOringoMacrosPanelY() : baseY,
+                220, HEADER_H));
+            panels.add(new OringoPanel("path", "Pathing",
+                cfg.getOringoPathPanelX() >= 0 ? cfg.getOringoPathPanelX() : baseX + 230,
+                cfg.getOringoPathPanelY() >= 0 ? cfg.getOringoPathPanelY() : baseY,
+                220, HEADER_H));
+            panels.add(new OringoPanel("automation", "Automation",
+                cfg.getOringoAutomationPanelX() >= 0 ? cfg.getOringoAutomationPanelX() : baseX,
+                cfg.getOringoAutomationPanelY() >= 0 ? cfg.getOringoAutomationPanelY() : baseY + 185,
+                220, HEADER_H));
+            panels.add(new OringoPanel("visual", "Visuals",
+                cfg.getOringoVisualPanelX() >= 0 ? cfg.getOringoVisualPanelX() : baseX + 230,
+                cfg.getOringoVisualPanelY() >= 0 ? cfg.getOringoVisualPanelY() : baseY + 185,
+                220, HEADER_H));
+            panels.add(new OringoPanel("misc", "Misc",
+                cfg.getOringoMiscPanelX() >= 0 ? cfg.getOringoMiscPanelX() : baseX + 115,
+                cfg.getOringoMiscPanelY() >= 0 ? cfg.getOringoMiscPanelY() : baseY + 385,
+                250, HEADER_H));
         }
 
         syncSelectedMacro();
@@ -1131,7 +1147,39 @@ public class OringoClickGui extends Screen {
         }
 
         draggingPanel.stopDrag();
+        savePanelPositions();
         draggingPanel = null;
+    }
+
+    private void savePanelPositions() {
+        ModConfig cfg = MacroModClient.getConfigManager().getConfig();
+        for (OringoPanel p : panels) {
+            switch (p.id) {
+                case "macros" -> {
+                    cfg.setOringoMacrosPanelX(p.x);
+                    cfg.setOringoMacrosPanelY(p.y);
+                }
+                case "path" -> {
+                    cfg.setOringoPathPanelX(p.x);
+                    cfg.setOringoPathPanelY(p.y);
+                }
+                case "automation" -> {
+                    cfg.setOringoAutomationPanelX(p.x);
+                    cfg.setOringoAutomationPanelY(p.y);
+                }
+                case "visual" -> {
+                    cfg.setOringoVisualPanelX(p.x);
+                    cfg.setOringoVisualPanelY(p.y);
+                }
+                case "misc" -> {
+                    cfg.setOringoMiscPanelX(p.x);
+                    cfg.setOringoMiscPanelY(p.y);
+                }
+                default -> {
+                }
+            }
+        }
+        MacroModClient.getConfigManager().save();
     }
 
     private OringoPanel panelById(String id) {

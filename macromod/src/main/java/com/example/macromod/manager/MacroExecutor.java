@@ -156,10 +156,16 @@ public class MacroExecutor {
     private static final double PLAYER_REACH_RADIUS_SQ = PLAYER_REACH_RADIUS * PLAYER_REACH_RADIUS;
     /** Integer loop bound for scan cubes (4 is enough for a 4.5 sphere and is faster than 5). */
     private static final int RADIUS_SCAN_RADIUS = 4;
+    /** Vertical loop bound for scan cubes (2 greatly reduces scan cost while keeping nearby layers). */
+    private static final int RADIUS_SCAN_VERTICAL = 2;
     /** Re-trigger scan when player moves this far (squared) from the last scan origin. */
     private static final double RESCAN_MOVE_THRESHOLD_SQ = 3.0 * 3.0;
+    /** Minimum interval between radius scans to avoid visible frame hitches. */
+    private static final long MIN_RADIUS_SCAN_INTERVAL_MS = 250L;
     /** Player block position at the last scanRadiusTargets call — drives dynamic rescan. */
     private BlockPos lastScanPlayerPos = null;
+    /** Last wall-clock time a radius scan was executed. */
+    private long lastRadiusScanMs = -1L;
     // ─── Statistics ─────────────────────────────────────────────
     private int blocksMinedTotal;
     private int blocksSkippedTotal;
@@ -538,24 +544,17 @@ public class MacroExecutor {
                     attackChaseStartMs = -1L;
                     stuckSince  = -1L;
                     lastPosition = new Vec3d(player.getX(), player.getY(), player.getZ());
-                    // Resume movement with existing path if available — no repath needed
-                    if (currentPath != null && currentPathIndex < currentPath.size()) {
-                        LOGGER.info("[macro.metrics.robustness] eliminationEnd step={} durationMs={} repath=false resumePath",
-                            currentStepIndex, eliminationDurationMs);
-                        // Keep state as MOVING — seamless resume
-                        if (state != MacroState.MOVING) {
-                            moveStartMs = System.currentTimeMillis();
-                            state = MacroState.MOVING;
-                        }
-                    } else {
-                        LOGGER.info("[macro.metrics.robustness] eliminationEnd step={} durationMs={} repath=true from={}",
-                            currentStepIndex, eliminationDurationMs, player.getBlockPos());
-                        currentPath = null;
-                        currentPathIndex = 0;
-                        moveStartMs = System.currentTimeMillis();
-                        state = MacroState.PATHFINDING;
-                        repathCount++;
+                    // Always repath after elimination: player may have drifted and old LOS assumptions are stale.
+                    LOGGER.info("[macro.metrics.robustness] eliminationEnd step={} durationMs={} repath=true from={}",
+                        currentStepIndex, eliminationDurationMs, player.getBlockPos());
+                    currentPath = null;
+                    currentPathIndex = 0;
+                    if (precomputedPaths != null && currentStepIndex < precomputedPaths.size()) {
+                        precomputedPaths.set(currentStepIndex, null);
                     }
+                    moveStartMs = System.currentTimeMillis();
+                    state = MacroState.PATHFINDING;
+                    repathCount++;
                 } else {
                     tickAttack(player, world, client);
                     return;
@@ -648,7 +647,6 @@ public class MacroExecutor {
         if (PlayerUtils.isArrived(player, goal, currentMacro.getConfig().getArrivalRadius())) {
             if (!isCenteredOnBlock(player, goal)) {
                 movementHelper.moveTowards(player, goal);
-                player.setSprinting(false);
                 return;
             }
             // Nav-only step (no targets to mine) → advance immediately, no input release
@@ -740,7 +738,6 @@ public class MacroExecutor {
             }
             if (!isCenteredOnBlock(player, dest)) {
                 movementHelper.moveTowards(player, dest);
-                player.setSprinting(false);
                 return;
             }
             movementHelper.releaseAllInputs();
@@ -834,7 +831,6 @@ public class MacroExecutor {
             }
             if (!isCenteredOnBlock(player, dest)) {
                 movementHelper.moveTowards(player, dest);
-                player.setSprinting(false);
                 return;
             }
             movementHelper.releaseAllInputs();
@@ -857,6 +853,20 @@ public class MacroExecutor {
                     bestIndex = i;
                     break;
                 }
+            }
+
+            // If the current waypoint itself is no longer visible and we found no visible
+            // replacement, recompute path from current position.
+            if (bestIndex == currentPathIndex
+                    && !BlockUtils.hasWalkableLOS(world, playerBlockPos, currentPath.get(currentPathIndex))) {
+                if (precomputedPaths != null && currentStepIndex < precomputedPaths.size()) {
+                    precomputedPaths.set(currentStepIndex, null);
+                }
+                currentPath = null;
+                currentPathIndex = 0;
+                state = MacroState.PATHFINDING;
+                repathCount++;
+                return;
             }
 
             // Advance path index to the farthest visible node
@@ -889,25 +899,6 @@ public class MacroExecutor {
 
         boolean onlyDefinedTargets = currentMacro.getConfig().isMineOnlyDefinedTargets();
 
-        // ── Radius scan: on first entry for this step, find matching blocks nearby ───
-        if (!radiusScanDone && !onlyDefinedTargets) {
-            radiusScanDone = true;
-            if (!step.getTargets().isEmpty()) {
-                scanRadiusTargets(step, world, player);
-            }
-        }
-
-        // ── Dynamic rescan: if player has moved >2 blocks since last scan, re-scan ──
-        if (!onlyDefinedTargets && lastScanPlayerPos != null && !step.getTargets().isEmpty()) {
-            BlockPos pp = player.getBlockPos();
-            int dx = pp.getX() - lastScanPlayerPos.getX();
-            int dy = pp.getY() - lastScanPlayerPos.getY();
-            int dz = pp.getZ() - lastScanPlayerPos.getZ();
-            if ((double)(dx*dx + dy*dy + dz*dz) > RESCAN_MOVE_THRESHOLD_SQ) {
-                scanRadiusTargets(step, world, player);
-            }
-        }
-
         if (step.isComplete()) {
             advanceToNextStep();
             return;
@@ -922,6 +913,30 @@ public class MacroExecutor {
         while (currentBlockTargetIndex < step.getTargets().size()
                 && step.getTargets().get(currentBlockTargetIndex).isProcessed()) {
             currentBlockTargetIndex++;
+        }
+
+        if (!onlyDefinedTargets) {
+            long now = System.currentTimeMillis();
+            boolean canScanNow = lastRadiusScanMs < 0 || now - lastRadiusScanMs >= MIN_RADIUS_SCAN_INTERVAL_MS;
+
+            // First entry scan: run only if we are out of immediate targets, to avoid startup hitch.
+            if (!radiusScanDone && currentBlockTargetIndex >= step.getTargets().size() && canScanNow) {
+                radiusScanDone = true;
+                if (!step.getTargets().isEmpty()) {
+                    scanRadiusTargets(step, world, player);
+                }
+            }
+
+            // Dynamic rescan: throttled and only useful when we have base target types.
+            if (canScanNow && lastScanPlayerPos != null && !step.getTargets().isEmpty()) {
+                BlockPos pp = player.getBlockPos();
+                int dx = pp.getX() - lastScanPlayerPos.getX();
+                int dy = pp.getY() - lastScanPlayerPos.getY();
+                int dz = pp.getZ() - lastScanPlayerPos.getZ();
+                if ((double)(dx*dx + dy*dy + dz*dz) > RESCAN_MOVE_THRESHOLD_SQ) {
+                    scanRadiusTargets(step, world, player);
+                }
+            }
         }
 
         if (currentBlockTargetIndex >= step.getTargets().size()) {
@@ -1503,12 +1518,13 @@ public class MacroExecutor {
 
         BlockPos center = player.getBlockPos();
         Vec3d eyePos = player.getEyePos();
-        int scanRadius = RADIUS_SCAN_RADIUS; // tighter loop bound for lower scan cost
+        int scanRadius = RADIUS_SCAN_RADIUS; // tighter horizontal loop bound for lower scan cost
+        int scanVertical = RADIUS_SCAN_VERTICAL;
 
         // Collect candidates into a temp list for distance-sorting
         java.util.List<BlockTarget> discovered = new java.util.ArrayList<>();
         for (int dx = -scanRadius; dx <= scanRadius; dx++) {
-            for (int dy = -scanRadius; dy <= scanRadius; dy++) {
+            for (int dy = -scanVertical; dy <= scanVertical; dy++) {
                 for (int dz = -scanRadius; dz <= scanRadius; dz++) {
                     // Sphere filter: skip if outside 4.5-block radius
                     if ((double)(dx*dx + dy*dy + dz*dz) > PLAYER_REACH_RADIUS_SQ) continue;
@@ -1533,6 +1549,7 @@ public class MacroExecutor {
         }
 
         lastScanPlayerPos = center;
+        lastRadiusScanMs = System.currentTimeMillis();
         if (!discovered.isEmpty()) {
             LOGGER.info("[macro.metrics.robustness] radiusScan step={} discovered={} totalTargets={}",
                 currentStepIndex, discovered.size(), step.getTargets().size());
@@ -1586,6 +1603,8 @@ public class MacroExecutor {
     private void advanceToNextStep() {
         currentStepIndex++;
         radiusScanDone = false;
+        lastScanPlayerPos = null;
+        lastRadiusScanMs = -1L;
         aimLocked = false;  // Unlock aim for next step
         aimLockedAtMs = -1L;
 
@@ -1594,6 +1613,11 @@ public class MacroExecutor {
                 // Reset and loop
                 currentMacro.reset();
                 currentStepIndex = 0;
+                if (precomputedPaths != null) {
+                    for (int i = 0; i < precomputedPaths.size(); i++) {
+                        precomputedPaths.set(i, null);
+                    }
+                }
                 state = MacroState.PATHFINDING;
                 LOGGER.info("[macro.metrics.lifecycle] macroLoopRestart step={} mined={} skipped={}",
                     currentStepIndex, blocksMinedTotal, blocksSkippedTotal);
@@ -1611,7 +1635,6 @@ public class MacroExecutor {
             aimLocked = false;  // Unlock aim for new step
             aimLockedAtMs = -1L;
             state = MacroState.PATHFINDING;
-            repathCount++;
         }
     }
 

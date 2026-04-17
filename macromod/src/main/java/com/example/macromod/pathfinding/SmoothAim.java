@@ -82,14 +82,14 @@ public class SmoothAim {
      * Scaled down from the old per-tick value because we now run 5× more often.
      * 0.035 per 10 ms × 5 steps ≈ 0.16 effective per tick — same feel, smoother motion.
      */
-    private volatile float BASE_LERP = 0.035f;
+    private volatile float BASE_LERP = 0.055f;
 
     /**
      * Maximum random ± variation applied to the LERP factor each loop step.
      * Produces slight speed irregularity — a human never rotates at perfectly
      * constant speed.  Keep at ≤50% of BASE_LERP.
      */
-    private volatile float LERP_VARIATION = 0.012f;
+    private volatile float LERP_VARIATION = 0.018f;
 
     /**
      * Angle at which the piecewise speed ramp bottoms out (slow zone boundary).
@@ -104,22 +104,22 @@ public class SmoothAim {
     private volatile float FAST_ZONE_DEG = 55f;
 
     /** Speed multiplier at the bottom of the slow zone (0 degrees total delta). */
-    private volatile float SPEED_AT_ZERO    = 0.55f;
+    private volatile float SPEED_AT_ZERO    = 0.80f;
     /** Speed multiplier at the top of the slow zone / bottom of fast zone. */
-    private volatile float SPEED_AT_SLOW    = 1.0f;
+    private volatile float SPEED_AT_SLOW    = 1.25f;
     /** Speed multiplier above the fast zone. */
-    private volatile float SPEED_AT_FAST    = 1.25f;
+    private volatile float SPEED_AT_FAST    = 1.65f;
 
     /**
      * Maximum yaw change per background step (10 ms) in degrees.
      * 22° / 5 steps = 4.4° per step, same effective cap as the old per-tick value.
      */
-    private static final float MAX_YAW_STEP   = 5.5f;
+    private static final float MAX_YAW_STEP   = 7.0f;
 
     /**
      * Maximum pitch change per background step (10 ms) in degrees.
      */
-    private static final float MAX_PITCH_STEP = 4.0f;
+    private static final float MAX_PITCH_STEP = 5.0f;
 
     /**
      * Once both yaw and pitch error are below this threshold (degrees),

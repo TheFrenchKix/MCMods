@@ -31,9 +31,10 @@ public class MovementHelper {
     private static final float SPRINT_YAW_THRESHOLD = 35f;
 
     // ── Waypoint arrival ──────────────────────────────────────
-    // 0.50 block radius: relaxed since LOS-based target selection handles skipping.
+    // 0.70 block radius: keeps momentum through intermediate waypoints and avoids
+    // visible micro-pauses before node transitions.
     // Only the final destination needs precise centering (via isCenteredOnBlock).
-    private static final double WAYPOINT_ARRIVE_RADIUS_SQ = 0.50 * 0.50;
+    private static final double WAYPOINT_ARRIVE_RADIUS_SQ = 0.70 * 0.70;
     private static final double WAYPOINT_ARRIVE_DY        = 0.5;
 
     // ── Jump / stuck / strafe detection ──────────────────────────
@@ -237,7 +238,7 @@ public class MovementHelper {
         boolean isDiagonalApproach = Math.abs(dx) > 0.3 && Math.abs(dz) > 0.3;
         
         // More lenient for diagonal approaches to prevent oscillation
-        double radiusSq = isDiagonalApproach ? 0.65 * 0.65 : WAYPOINT_ARRIVE_RADIUS_SQ;
+        double radiusSq = isDiagonalApproach ? 0.90 * 0.90 : WAYPOINT_ARRIVE_RADIUS_SQ;
         
         return (dx * dx + dz * dz) <= radiusSq && dy <= WAYPOINT_ARRIVE_DY;
     }

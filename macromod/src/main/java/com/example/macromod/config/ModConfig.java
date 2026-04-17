@@ -45,6 +45,18 @@ public class ModConfig {
     private float smoothAimSlowZone  = 15f;
     private float smoothAimFastZone  = 55f;
 
+    // ── Oringo GUI panel positions (persisted) ──────────────────────
+    private int oringoMacrosPanelX = -1;
+    private int oringoMacrosPanelY = -1;
+    private int oringoPathPanelX = -1;
+    private int oringoPathPanelY = -1;
+    private int oringoAutomationPanelX = -1;
+    private int oringoAutomationPanelY = -1;
+    private int oringoVisualPanelX = -1;
+    private int oringoVisualPanelY = -1;
+    private int oringoMiscPanelX = -1;
+    private int oringoMiscPanelY = -1;
+
     public String getHudPosition() {
         return hudPosition;
     }
@@ -197,4 +209,36 @@ public class ModConfig {
 
     public float getSmoothAimFastZone()  { return smoothAimFastZone; }
     public void  setSmoothAimFastZone(float v)  { smoothAimFastZone  = Math.max(10f, Math.min(90f, v)); }
+
+    // ── Oringo panel positions getters/setters ──────────────────────
+
+    public int getOringoMacrosPanelX() { return oringoMacrosPanelX; }
+    public void setOringoMacrosPanelX(int v) { oringoMacrosPanelX = v; }
+
+    public int getOringoMacrosPanelY() { return oringoMacrosPanelY; }
+    public void setOringoMacrosPanelY(int v) { oringoMacrosPanelY = v; }
+
+    public int getOringoPathPanelX() { return oringoPathPanelX; }
+    public void setOringoPathPanelX(int v) { oringoPathPanelX = v; }
+
+    public int getOringoPathPanelY() { return oringoPathPanelY; }
+    public void setOringoPathPanelY(int v) { oringoPathPanelY = v; }
+
+    public int getOringoAutomationPanelX() { return oringoAutomationPanelX; }
+    public void setOringoAutomationPanelX(int v) { oringoAutomationPanelX = v; }
+
+    public int getOringoAutomationPanelY() { return oringoAutomationPanelY; }
+    public void setOringoAutomationPanelY(int v) { oringoAutomationPanelY = v; }
+
+    public int getOringoVisualPanelX() { return oringoVisualPanelX; }
+    public void setOringoVisualPanelX(int v) { oringoVisualPanelX = v; }
+
+    public int getOringoVisualPanelY() { return oringoVisualPanelY; }
+    public void setOringoVisualPanelY(int v) { oringoVisualPanelY = v; }
+
+    public int getOringoMiscPanelX() { return oringoMiscPanelX; }
+    public void setOringoMiscPanelX(int v) { oringoMiscPanelX = v; }
+
+    public int getOringoMiscPanelY() { return oringoMiscPanelY; }
+    public void setOringoMiscPanelY(int v) { oringoMiscPanelY = v; }
 }
